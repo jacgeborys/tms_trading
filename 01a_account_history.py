@@ -194,20 +194,15 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     total_upnl   = np.zeros(n)
     total_margin = np.zeros(n)
 
-    # margin_scale ≈ PLN/USD conversion rate.
-    # Use the last cached bar close price — same data used for the whole reconstruction,
-    # and avoids tick returning 0/None when the market is closed (weekends).
+    # margin_scale: converts the raw formula (price × vol × cs / leverage) to the
+    # actual account-currency margin.  Uses entry price so that the same scale
+    # applies consistently to both current and historical upnl/margin values.
     formula_margin_now = 0.0
     for _, pos in positions.iterrows():
-        sym = pos["symbol"]
-        si  = mt5.symbol_info(sym)
+        si = mt5.symbol_info(pos["symbol"])
         contract_size = si.trade_contract_size if si else 50.0
-        last_close = float(symbol_data[sym]["close"].iloc[-1]) if sym in symbol_data \
-                     else pos["price_open"]
-        formula_margin_now += last_close * pos["volume"] * contract_size / leverage
+        formula_margin_now += pos["price_open"] * pos["volume"] * contract_size / leverage
     margin_scale = (margin_used / formula_margin_now) if formula_margin_now > 0 else 1.0
-    print(f"  margin_scale = {margin_scale:.4f}  "
-          f"(info.margin={margin_used:.2f}  formula_now={formula_margin_now:.2f})")
 
     for _, pos in positions.iterrows():
         sym = pos["symbol"]
@@ -290,8 +285,6 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 )
                 total_upnl += hist_upnl
 
-    # Convert all upnl from raw USD (price_diff × vol × cs) to PLN
-    total_upnl  *= margin_scale
     equity       = balance + total_upnl
     free_margin  = equity - total_margin
     margin_level = np.where(total_margin > 0, equity / total_margin * 100.0, np.inf)
