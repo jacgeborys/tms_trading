@@ -194,16 +194,17 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     total_upnl   = np.zeros(n)
     total_margin = np.zeros(n)
 
-    # Scale factor: info.margin / formula_at_CURRENT_price  =  pure PLN/USD rate.
-    # Using entry price in the denominator would mix in a price-change ratio
-    # that makes the scale wrong when applied to historical positions.
+    # margin_scale ≈ PLN/USD conversion rate.
+    # Use the last cached bar close price — same data used for the whole reconstruction,
+    # and avoids tick returning 0/None when the market is closed (weekends).
     formula_margin_now = 0.0
     for _, pos in positions.iterrows():
-        si = mt5.symbol_info(pos["symbol"])
+        sym = pos["symbol"]
+        si  = mt5.symbol_info(sym)
         contract_size = si.trade_contract_size if si else 50.0
-        tick = mt5.symbol_info_tick(pos["symbol"])
-        current_price = (tick.ask + tick.bid) / 2.0 if tick else pos["price_open"]
-        formula_margin_now += current_price * pos["volume"] * contract_size / leverage
+        last_close = float(symbol_data[sym]["close"].iloc[-1]) if sym in symbol_data \
+                     else pos["price_open"]
+        formula_margin_now += last_close * pos["volume"] * contract_size / leverage
     margin_scale = (margin_used / formula_margin_now) if formula_margin_now > 0 else 1.0
     print(f"  margin_scale = {margin_scale:.4f}  "
           f"(info.margin={margin_used:.2f}  formula_now={formula_margin_now:.2f})")
@@ -226,10 +227,9 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             pos_open = pos_open.tz_localize(None)
         active = bar_times >= np.datetime64(pos_open)
 
-        # Unrealised P&L — multiply by margin_scale to convert USD → PLN
         upnl = np.where(
             active,
-            direction * (closes - pos["price_open"]) * pos["volume"] * contract_size * margin_scale,
+            direction * (closes - pos["price_open"]) * pos["volume"] * contract_size,
             0.0,
         )
         total_upnl += upnl
@@ -283,8 +283,6 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             if sym in symbol_data:
                 closes    = symbol_data[sym]["close"].values
                 direction = od["direction"]
-                # Historical upnl left in raw USD units (we lack historical PLN/USD
-                # rates; using current margin_scale here would corrupt old bars).
                 hist_upnl = np.where(
                     window,
                     direction * (closes - od["price_open"]) * od["volume"] * contract_size,
@@ -292,6 +290,8 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 )
                 total_upnl += hist_upnl
 
+    # Convert all upnl from raw USD (price_diff × vol × cs) to PLN
+    total_upnl  *= margin_scale
     equity       = balance + total_upnl
     free_margin  = equity - total_margin
     margin_level = np.where(total_margin > 0, equity / total_margin * 100.0, np.inf)
