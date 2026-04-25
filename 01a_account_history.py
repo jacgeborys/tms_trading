@@ -222,11 +222,19 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             pos_open = pos_open.tz_localize(None)
         active = bar_times >= np.datetime64(pos_open)
 
-        upnl = np.where(
-            active,
-            direction * (closes - pos["price_open"]) * pos["volume"] * contract_size,
-            0.0,
-        )
+        # Option C: anchor upnl to actual PLN profit from MT5.
+        # p.profit is already in PLN (account currency).  We scale it by the
+        # price-movement ratio so that at the last bar upnl == p.profit exactly,
+        # and intermediate bars are proportional.  USDPLN cancels out — no
+        # exchange rate data needed.
+        profit_pln = float(pos["profit"])
+        last_close  = float(closes[-1])
+        delta       = last_close - pos["price_open"]
+        if abs(delta) > 0.1:
+            price_ratio = (closes - pos["price_open"]) / delta
+            upnl = np.where(active, profit_pln * price_ratio, 0.0)
+        else:
+            upnl = np.zeros(n)
         total_upnl += upnl
 
         # Margin steps up when position opens; scaled to account currency
@@ -274,15 +282,25 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
 
             total_margin += np.where(window, hist_margin, 0.0)
 
-            # Reconstruct unrealised P&L so equity is correct during this period
+            # Option C: anchor historical upnl to actual net PLN from deal history.
+            # net_pln = sum of all close-deal P&L for this position (already PLN).
+            # Scale by price-movement ratio so upnl == net_pln at the close bar.
             if sym in symbol_data:
-                closes    = symbol_data[sym]["close"].values
-                direction = od["direction"]
-                hist_upnl = np.where(
-                    window,
-                    direction * (closes - od["price_open"]) * od["volume"] * contract_size,
-                    0.0,
+                sym_closes = symbol_data[sym]["close"].values
+                net_pln    = float(
+                    trade_deals[trade_deals["position_id"] == pid]["net"].sum()
                 )
+                # Price at the last bar inside the window (≈ close price)
+                if window.any():
+                    close_bar_price = float(sym_closes[window][-1])
+                else:
+                    close_bar_price = od["price_open"]
+                delta = close_bar_price - od["price_open"]
+                if abs(delta) > 0.1:
+                    price_ratio = (sym_closes - od["price_open"]) / delta
+                    hist_upnl   = np.where(window, net_pln * price_ratio, 0.0)
+                else:
+                    hist_upnl = np.zeros(n)
                 total_upnl += hist_upnl
 
     equity       = balance + total_upnl
