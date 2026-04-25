@@ -52,21 +52,31 @@ def fetch_deal_history():
     if raw is None or not len(raw):
         return pd.DataFrame(), pd.DataFrame()
 
-    bal_rows, trade_rows = [], []
+    bal_rows, trade_rows, open_rows = [], [], []
     for d in raw:
         t = pd.Timestamp(d.time, unit="s", tz="UTC")
         if d.type == DEAL_TYPE_BALANCE:
             bal_rows.append({"time": t, "amount": d.profit, "comment": d.comment})
-        elif d.entry in (1, 2):   # DEAL_ENTRY_OUT, DEAL_ENTRY_INOUT
+        elif d.entry in (1, 2):   # DEAL_ENTRY_OUT, DEAL_ENTRY_INOUT — closed trade
             trade_rows.append({
-                "time":       t,
-                "symbol":     d.symbol,
-                "volume":     d.volume,
-                "profit":     d.profit,
-                "commission": d.commission,
-                "swap":       d.swap,
-                "fee":        d.fee,
-                "net":        d.profit + d.commission + d.swap + d.fee,
+                "time":        t,
+                "position_id": d.position_id,
+                "symbol":      d.symbol,
+                "volume":      d.volume,
+                "profit":      d.profit,
+                "commission":  d.commission,
+                "swap":        d.swap,
+                "fee":         d.fee,
+                "net":         d.profit + d.commission + d.swap + d.fee,
+            })
+        elif d.entry == 0:        # DEAL_ENTRY_IN — position opened
+            open_rows.append({
+                "time":        t,
+                "position_id": d.position_id,
+                "symbol":      d.symbol,
+                "volume":      d.volume,
+                "price_open":  d.price,
+                "direction":   1.0 if d.type == 0 else -1.0,
             })
 
     def _df(rows):
@@ -74,7 +84,7 @@ def fetch_deal_history():
             return pd.DataFrame()
         return pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
 
-    return _df(bal_rows), _df(trade_rows)
+    return _df(bal_rows), _df(trade_rows), _df(open_rows)
 
 
 def get_open_positions() -> pd.DataFrame:
@@ -99,7 +109,7 @@ def get_open_positions() -> pd.DataFrame:
 # ── Equity reconstruction ──────────────────────────────────────────────────────
 
 def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
-                       trade_deals: pd.DataFrame,
+                       trade_deals: pd.DataFrame, open_deals: pd.DataFrame,
                        margin_used: float, leverage: int,
                        t_start: pd.Timestamp = None) -> pd.DataFrame:
     """
@@ -222,6 +232,34 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
         # Margin steps up when position opens; scaled to account currency
         pos_margin = pos["price_open"] * pos["volume"] * contract_size / leverage * margin_scale
         total_margin += np.where(active, pos_margin, 0.0)
+
+    # ── Historical (closed) positions — margin only ───────────────────────────
+    # Match opening deals with their closing deals by position_id to find the
+    # period each historical position was open, then add its margin for that window.
+    if not open_deals.empty and not trade_deals.empty:
+        close_by_id = trade_deals.set_index("position_id")["time"].to_dict() \
+                      if "position_id" in trade_deals.columns else {}
+        for _, od in open_deals.iterrows():
+            pid = od["position_id"]
+            if pid not in close_by_id:
+                continue   # still open — already handled above
+            t_open  = od["time"]
+            t_close = close_by_id[pid]
+            if t_open.tzinfo is not None:
+                t_open = t_open.tz_localize(None)
+            if t_close.tzinfo is not None:
+                t_close = t_close.tz_localize(None)
+
+            sym = od["symbol"]
+            si  = mt5.symbol_info(sym)
+            contract_size = si.trade_contract_size if si else 50.0
+            hist_margin = (od["price_open"] * od["volume"] * contract_size
+                           / leverage * margin_scale)
+
+            master_times = symbol_data[list(symbol_data.keys())[0]]["time"].values
+            window = ((master_times >= np.datetime64(t_open)) &
+                      (master_times <  np.datetime64(t_close)))
+            total_margin += np.where(window, hist_margin, 0.0)
 
     equity       = balance + total_upnl
     free_margin  = equity - total_margin
@@ -475,9 +513,10 @@ def main():
         leverage  = info.leverage if info.leverage > 0 else 20
 
         print("Fetching deal history...")
-        bal_events, trade_deals = fetch_deal_history()
+        bal_events, trade_deals, open_deals = fetch_deal_history()
         print(f"  {len(bal_events)} deposit/withdrawal event(s)")
         print(f"  {len(trade_deals)} closed trade deal(s)")
+        print(f"  {len(open_deals)} position-open deal(s)")
 
         print("Fetching open positions...")
         positions = get_open_positions()
@@ -490,7 +529,7 @@ def main():
             cutoff = None if args.show_all else (
                 pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
             )
-            ts = reconstruct_equity(positions, bal_events, trade_deals,
+            ts = reconstruct_equity(positions, bal_events, trade_deals, open_deals,
                                     info.margin, leverage, t_start=cutoff)
             if not ts.empty:
                 print(f"  {len(ts):,} bars  "
