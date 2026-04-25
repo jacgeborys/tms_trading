@@ -290,6 +290,9 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 )
                 total_upnl += hist_upnl
 
+    # total_upnl is in USD (price_diff × volume × contract_size); balance is in PLN.
+    # margin_scale ≈ PLN/USD — same conversion factor used for margin.
+    total_upnl  *= margin_scale
     equity       = balance + total_upnl
     free_margin  = equity - total_margin
     margin_level = np.where(total_margin > 0, equity / total_margin * 100.0, np.inf)
