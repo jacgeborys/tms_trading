@@ -233,33 +233,50 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
         pos_margin = pos["price_open"] * pos["volume"] * contract_size / leverage * margin_scale
         total_margin += np.where(active, pos_margin, 0.0)
 
-    # ── Historical (closed) positions — margin only ───────────────────────────
-    # Match opening deals with their closing deals by position_id to find the
-    # period each historical position was open, then add its margin for that window.
+    # ── Historical (closed) positions — margin + P&L reconstruction ─────────
+    # For each closed position we reconstruct BOTH margin and unrealised P&L
+    # over its open period.  Without the P&L, equity = balance (just cash) while
+    # margin reflects a real position — making margin > equity look wrong.
     if not open_deals.empty and not trade_deals.empty:
         close_by_id = trade_deals.set_index("position_id")["time"].to_dict() \
                       if "position_id" in trade_deals.columns else {}
+        seen_pids   = set()   # deduplicate: only first open deal per position_id
+
         for _, od in open_deals.iterrows():
             pid = od["position_id"]
-            if pid not in close_by_id:
-                continue   # still open — already handled above
+            if pid not in close_by_id or pid in seen_pids:
+                continue   # still open (handled above) or already processed
+            seen_pids.add(pid)
+
             t_open  = od["time"]
             t_close = close_by_id[pid]
             if t_open.tzinfo is not None:
-                t_open = t_open.tz_localize(None)
+                t_open  = t_open.tz_localize(None)
             if t_close.tzinfo is not None:
                 t_close = t_close.tz_localize(None)
 
             sym = od["symbol"]
             si  = mt5.symbol_info(sym)
             contract_size = si.trade_contract_size if si else 50.0
-            hist_margin = (od["price_open"] * od["volume"] * contract_size
-                           / leverage * margin_scale)
+            hist_margin   = (od["price_open"] * od["volume"] * contract_size
+                             / leverage * margin_scale)
 
             master_times = symbol_data[list(symbol_data.keys())[0]]["time"].values
             window = ((master_times >= np.datetime64(t_open)) &
                       (master_times <  np.datetime64(t_close)))
+
             total_margin += np.where(window, hist_margin, 0.0)
+
+            # Reconstruct unrealised P&L so equity is correct during this period
+            if sym in symbol_data:
+                closes    = symbol_data[sym]["close"].values
+                direction = od["direction"]
+                hist_upnl = np.where(
+                    window,
+                    direction * (closes - od["price_open"]) * od["volume"] * contract_size,
+                    0.0,
+                )
+                total_upnl += hist_upnl
 
     equity       = balance + total_upnl
     free_margin  = equity - total_margin
