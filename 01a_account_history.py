@@ -194,15 +194,19 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     total_upnl   = np.zeros(n)
     total_margin = np.zeros(n)
 
-    # Scale factor: current account_info().margin divided by what the formula
-    # gives at current price — corrects for currency conversion (PLN vs USD)
-    # so the margin step heights are in the right account currency.
+    # Scale factor: info.margin / formula_at_CURRENT_price  =  pure PLN/USD rate.
+    # Using entry price in the denominator would mix in a price-change ratio
+    # that makes the scale wrong when applied to historical positions.
     formula_margin_now = 0.0
     for _, pos in positions.iterrows():
         si = mt5.symbol_info(pos["symbol"])
         contract_size = si.trade_contract_size if si else 50.0
-        formula_margin_now += pos["price_open"] * pos["volume"] * contract_size / leverage
+        tick = mt5.symbol_info_tick(pos["symbol"])
+        current_price = (tick.ask + tick.bid) / 2.0 if tick else pos["price_open"]
+        formula_margin_now += current_price * pos["volume"] * contract_size / leverage
     margin_scale = (margin_used / formula_margin_now) if formula_margin_now > 0 else 1.0
+    print(f"  margin_scale = {margin_scale:.4f}  "
+          f"(info.margin={margin_used:.2f}  formula_now={formula_margin_now:.2f})")
 
     for _, pos in positions.iterrows():
         sym = pos["symbol"]
