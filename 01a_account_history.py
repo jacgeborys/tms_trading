@@ -222,12 +222,9 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             pos_open = pos_open.tz_localize(None)
         active = bar_times >= np.datetime64(pos_open)
 
-        # margin_scale ≈ PLN/USD — converts current-position upnl to account currency.
-        # Historical closed-position upnl is left in raw index-point units (consistent
-        # with how their margin is computed before the margin_scale factor).
         upnl = np.where(
             active,
-            direction * (closes - pos["price_open"]) * pos["volume"] * contract_size * margin_scale,
+            direction * (closes - pos["price_open"]) * pos["volume"] * contract_size,
             0.0,
         )
         total_upnl += upnl
