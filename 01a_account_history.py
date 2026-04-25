@@ -94,14 +94,15 @@ def get_open_positions() -> pd.DataFrame:
     rows = []
     for p in raw:
         rows.append({
-            "ticket":     p.ticket,
-            "symbol":     p.symbol,
-            "type":       p.type,        # 0=buy 1=sell
-            "volume":     p.volume,
-            "price_open": p.price_open,
-            "time_open":  pd.Timestamp(p.time, unit="s", tz="UTC"),
-            "profit":     p.profit,
-            "swap":       p.swap,
+            "ticket":      p.ticket,
+            "position_id": p.identifier,   # matches position_id in deal history
+            "symbol":      p.symbol,
+            "type":        p.type,         # 0=buy 1=sell
+            "volume":      p.volume,
+            "price_open":  p.price_open,
+            "time_open":   pd.Timestamp(p.time, unit="s", tz="UTC"),
+            "profit":      p.profit,
+            "swap":        p.swap,
         })
     return pd.DataFrame(rows)
 
@@ -240,7 +241,14 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     if not open_deals.empty and not trade_deals.empty:
         close_by_id = trade_deals.set_index("position_id")["time"].to_dict() \
                       if "position_id" in trade_deals.columns else {}
-        seen_pids   = set()   # deduplicate: only first open deal per position_id
+        # Pre-populate with currently open position IDs so partially-closed
+        # positions (which appear in both current loop and open_deals) are not
+        # double-counted in the historical reconstruction.
+        seen_pids = set()
+        if "position_id" in positions.columns:
+            seen_pids.update(
+                int(pid) for pid in positions["position_id"].dropna()
+            )
 
         for _, od in open_deals.iterrows():
             pid = od["position_id"]
