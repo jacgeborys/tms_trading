@@ -391,7 +391,7 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
         times       = ts_plot["time"].values
         equity      = ts_plot["equity"].values
         m_used      = ts_plot["margin_used"].values   # per-bar array — 0 before position opens, steps up after
-        m_current   = float(ts_plot["margin_used"].max())
+        m_current   = float(ts_plot["margin_used"].iloc[-1])  # last bar = current
 
         # Band 1 — margin used (bottom, orange): steps up when position opens
         ax1.fill_between(times, 0, m_used,
