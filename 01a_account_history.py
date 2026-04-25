@@ -41,18 +41,40 @@ EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 # ── Data fetching ──────────────────────────────────────────────────────────────
 
-def fetch_balance_events() -> pd.DataFrame:
-    """Deposit / withdrawal events from deal history."""
+def fetch_deal_history():
+    """
+    Fetch all account deals and split into two DataFrames:
+      bal_events  — deposits / withdrawals  (DEAL_TYPE_BALANCE)
+      trade_deals — closed positions        (DEAL_ENTRY_OUT / DEAL_ENTRY_INOUT)
+    """
     now = datetime.now(tz=timezone.utc)
     raw = mt5.history_deals_get(EPOCH, now)
     if raw is None or not len(raw):
-        return pd.DataFrame()
-    rows = [
-        {"time": pd.Timestamp(d.time, unit="s", tz="UTC"),
-         "amount": d.profit, "comment": d.comment}
-        for d in raw if d.type == DEAL_TYPE_BALANCE
-    ]
-    return pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
+        return pd.DataFrame(), pd.DataFrame()
+
+    bal_rows, trade_rows = [], []
+    for d in raw:
+        t = pd.Timestamp(d.time, unit="s", tz="UTC")
+        if d.type == DEAL_TYPE_BALANCE:
+            bal_rows.append({"time": t, "amount": d.profit, "comment": d.comment})
+        elif d.entry in (1, 2):   # DEAL_ENTRY_OUT, DEAL_ENTRY_INOUT
+            trade_rows.append({
+                "time":       t,
+                "symbol":     d.symbol,
+                "volume":     d.volume,
+                "profit":     d.profit,
+                "commission": d.commission,
+                "swap":       d.swap,
+                "fee":        d.fee,
+                "net":        d.profit + d.commission + d.swap + d.fee,
+            })
+
+    def _df(rows):
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
+
+    return _df(bal_rows), _df(trade_rows)
 
 
 def get_open_positions() -> pd.DataFrame:
@@ -77,6 +99,7 @@ def get_open_positions() -> pd.DataFrame:
 # ── Equity reconstruction ──────────────────────────────────────────────────────
 
 def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
+                       trade_deals: pd.DataFrame,
                        margin_used: float, leverage: int,
                        t_start: pd.Timestamp = None) -> pd.DataFrame:
     """
@@ -136,21 +159,25 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     times  = master["time"].values
     n      = len(times)
 
-    # ── Dynamic balance: step up/down at each deposit or withdrawal ───────────
-    balance = np.zeros(n)
-    if not bal_events.empty:
-        # Strip timezone so comparison with tz-naive numpy datetime64 times works
-        ev_times   = bal_events["time"].dt.tz_localize(None).values
-        ev_amounts = bal_events["amount"].values
-        running    = 0.0
-        ev_idx     = 0
+    def _step_series(events: pd.DataFrame, amount_col: str) -> np.ndarray:
+        """Build a cumulative step-function array over `times` from event rows."""
+        out = np.zeros(n)
+        if events.empty:
+            return out
+        ev_times   = events["time"].dt.tz_localize(None).values
+        ev_amounts = events[amount_col].values
+        running, ev_idx = 0.0, 0
         for i, t in enumerate(times):
             while ev_idx < len(ev_times) and ev_times[ev_idx] <= t:
-                running += ev_amounts[ev_idx]
-                ev_idx  += 1
-            balance[i] = running
-    # If no balance events recorded yet, fall back to the last bar = current balance
-    # (caller should pass bal_events; this handles the edge case gracefully)
+                running  += ev_amounts[ev_idx]
+                ev_idx   += 1
+            out[i] = running
+        return out
+
+    # ── Deposited capital (cash in/out) and realised trading P&L ─────────────
+    deposited = _step_series(bal_events, "amount")   # steps on deposits/withdrawals
+    realised  = _step_series(trade_deals, "net")     # steps on every closed trade
+    balance   = deposited + realised
 
     # ── Per-bar unrealised P&L and margin ────────────────────────────────────
     total_upnl   = np.zeros(n)
@@ -203,9 +230,11 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     return pd.DataFrame({
         "time":         times,
         "equity":       equity,
-        "balance":      balance,        # step function — rises on each deposit
+        "balance":      balance,        # deposited + realised
+        "deposited":    deposited,      # cash in only
+        "realised":     realised,       # cumulative closed-trade P&L
         "upnl":         total_upnl,
-        "margin_used":  total_margin,   # step function — rises as positions open
+        "margin_used":  total_margin,
         "free_margin":  free_margin,
         "margin_level": margin_level,
     })
@@ -264,6 +293,8 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
             .agg({
                 "equity":       "last",
                 "balance":      "last",
+                "deposited":    "last",
+                "realised":     "last",
                 "upnl":         "last",
                 "margin_used":  "last",
                 "free_margin":  "last",
@@ -358,27 +389,38 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
         plt.tight_layout()
         return fig
 
-    # ── Panel 2: deposits vs earned ────────────────────────────────────────────
+    # ── Panel 2: deposited vs realised P&L vs unrealised P&L ──────────────────
     ax2 = fig.add_subplot(gs[1], sharex=ax1)
-    bal  = ts_plot["balance"].values
+    dep  = ts_plot["deposited"].values
+    real = ts_plot["realised"].values
     eq   = ts_plot["equity"].values
+    bal  = ts_plot["balance"].values   # dep + real
 
-    # Bottom band: deposited capital (blue)
-    ax2.fill_between(times, 0, bal,
-                     color="#40a0f0", alpha=0.50, label="Deposited")
-    # Top band: earned (green) or lost (red) on top of deposited
+    # Layer 1 — deposited cash (blue, always at the bottom)
+    ax2.fill_between(times, 0, dep,
+                     color="#40a0f0", alpha=0.55, label="Deposited")
+
+    # Layer 2 — realised P&L from closed trades (on top of deposited)
+    ax2.fill_between(times, dep, bal,
+                     where=(bal >= dep),
+                     color="#26a69a", alpha=0.70, label="Realised P&L (profit)")
+    ax2.fill_between(times, bal, dep,
+                     where=(bal < dep),
+                     color="#ef5350", alpha=0.70, label="Realised P&L (loss)")
+
+    # Layer 3 — unrealised P&L from open positions (lightest, on top)
     ax2.fill_between(times, bal, eq,
                      where=(eq >= bal),
-                     color="#26a69a", alpha=0.65, label="Earned (unrealised)")
+                     color="#80e080", alpha=0.40, label="Unrealised (profit)")
     ax2.fill_between(times, eq, bal,
                      where=(eq < bal),
-                     color="#ef5350", alpha=0.65, label="Lost (unrealised)")
-    ax2.plot(times, eq, color="#f0f0f0", lw=1.2, zorder=4)
-    ax2.step(times, bal, where="post", color="#aaaaaa", lw=0.9, ls="--")
+                     color="#ff8080", alpha=0.40, label="Unrealised (loss)")
+
+    ax2.plot(times, eq, color="#f0f0f0", lw=1.2, zorder=4, label="Equity")
     ax2.set_ylim(bottom=0)
     ax2.set_ylabel(f"Amount ({currency})")
-    ax2.set_title("Deposited capital vs unrealised P&L")
-    ax2.legend(fontsize=8, ncol=3)
+    ax2.set_title("Capital composition: deposited  +  realised P&L  +  unrealised P&L")
+    ax2.legend(fontsize=7, ncol=6)
     ax2.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
     ax2.grid(True, alpha=0.18)
     plt.setp(ax2.get_xticklabels(), visible=False)
@@ -432,9 +474,10 @@ def main():
         currency  = info.currency
         leverage  = info.leverage if info.leverage > 0 else 20
 
-        print("Fetching balance events...")
-        bal_events = fetch_balance_events()
-        print(f"  {len(bal_events)} deposit/withdrawal event(s) found")
+        print("Fetching deal history...")
+        bal_events, trade_deals = fetch_deal_history()
+        print(f"  {len(bal_events)} deposit/withdrawal event(s)")
+        print(f"  {len(trade_deals)} closed trade deal(s)")
 
         print("Fetching open positions...")
         positions = get_open_positions()
@@ -447,8 +490,8 @@ def main():
             cutoff = None if args.show_all else (
                 pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
             )
-            ts = reconstruct_equity(positions, bal_events, info.margin, leverage,
-                                    t_start=cutoff)
+            ts = reconstruct_equity(positions, bal_events, trade_deals,
+                                    info.margin, leverage, t_start=cutoff)
             if not ts.empty:
                 print(f"  {len(ts):,} bars  "
                       f"({str(ts['time'].iloc[0])[:16]} UTC → now)")
