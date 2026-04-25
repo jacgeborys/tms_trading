@@ -1,0 +1,9 @@
+data/
+results/
+models/
+__pycache__/
+*.pkl
+*.pyc
+.env
+.idea/
+.claude/
