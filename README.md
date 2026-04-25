@@ -10,8 +10,8 @@ Research and backtesting system for **US500.pro** (S&P 500 CFD) via MetaTrader 5
 
 | | Value |
 |---|---|
-| Live account (user trades here) | **48908** on OANDATMS-MT5 — log in manually in the MT5 terminal |
-| Demo/research account (scripts use) | **62611585** on OANDATMS-MT5 |
+| Live account (user trades here) | personal account on OANDATMS-MT5 — log in manually in the MT5 terminal |
+| Demo/research account (scripts use) | demo account on OANDATMS-MT5 — number in CLAUDE.md (not public) |
 | Instrument | US500.pro — S&P 500 CFD |
 | Contract size | 50 (1 lot = 50 × index price, profit in USD) |
 | Leverage | 20× |
