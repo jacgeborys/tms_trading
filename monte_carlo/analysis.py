@@ -169,6 +169,7 @@ def optimal_lots(
     cow_prices: np.ndarray,
     portfolio: Dict[str, np.ndarray],
     balance: float,
+    open_positions: List[Tuple[float, float]] = None,
     coeff: float  = config.COEFF,
     leverage: int = config.LEVERAGE,
     target_ml: float = config.TARGET_ML_P5,
@@ -202,8 +203,10 @@ def optimal_lots(
     # Analytical approximation using p5 price from simulation
     p5_price = float(np.percentile(prices[:, 90], 5))
 
-    open_lots  = np.array([p[0] for p in config.OPEN_POSITIONS])
-    open_entry = np.array([p[1] for p in config.OPEN_POSITIONS])
+    if open_positions is None:
+        open_positions = config.OPEN_POSITIONS
+    open_lots  = np.array([p[0] for p in open_positions])
+    open_entry = np.array([p[1] for p in open_positions])
     open_upnl_p5 = float(((p5_price - open_entry) * open_lots * coeff).sum())
     open_margin  = float((open_lots * open_entry * coeff / leverage).sum())
 
