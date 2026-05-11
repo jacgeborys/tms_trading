@@ -16,19 +16,39 @@ def fetch_calibration(verbose: bool = True) -> Tuple[float, float]:
     """
     Download SPX daily closes via yfinance and return
     (annualised_drift, annualised_vol) calibrated from the last HIST_DAYS.
+
+    Retries once after 10 s if rate-limited.  Falls back to SPX long-run
+    averages (μ=10%, σ=18%) if Yahoo is unavailable.
     """
+    import time
     import yfinance as yf
 
-    ticker = yf.Ticker(config.SPX_TICKER)
-    hist   = ticker.history(period=f"{config.HIST_DAYS + 20}d")["Close"]
-    log_r  = np.log(hist / hist.shift(1)).dropna().values
-    log_r  = log_r[-config.HIST_DAYS:]
+    def _download() -> np.ndarray:
+        ticker = yf.Ticker(config.SPX_TICKER)
+        hist   = ticker.history(period=f"{config.HIST_DAYS + 20}d")["Close"]
+        log_r  = np.log(hist / hist.shift(1)).dropna().values
+        return log_r[-config.HIST_DAYS:]
+
+    for attempt in range(2):
+        try:
+            log_r = _download()
+            if len(log_r) < 20:
+                raise ValueError(f"Only {len(log_r)} rows returned")
+            break
+        except Exception as e:
+            if attempt == 0:
+                print(f"  Yahoo fetch failed ({e.__class__.__name__}), retrying in 10 s...")
+                time.sleep(10)
+            else:
+                print(f"  Yahoo unavailable — using SPX long-run defaults (μ=10%, σ=18%)")
+                if verbose:
+                    print(f"  Calibration (fallback):  μ = +10.00%/yr   σ = 18.00%/yr")
+                return 0.10, 0.18
 
     mu_daily    = log_r.mean()
     sigma_daily = log_r.std(ddof=1)
-
-    mu_ann    = mu_daily * 252
-    sigma_ann = sigma_daily * np.sqrt(252)
+    mu_ann      = mu_daily * 252
+    sigma_ann   = sigma_daily * np.sqrt(252)
 
     if verbose:
         print(f"  Calibration ({len(log_r)} days):  "
