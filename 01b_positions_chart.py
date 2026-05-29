@@ -9,12 +9,12 @@ Three-panel FOMO dashboard for all currently open US500.pro positions:
     · White dotted line = current price
     · Gap text: how many pts / % above average entry
 
-  Panel 2 — P&L sensitivity curve  ("will the tower topple?")
-    · X-axis: hypothetical US500 price (trimmed to ±15% of current)
-    · Y-axis: total unrealised P&L in account currency
-    · Key levels annotated directly on their vertical lines:
-      break-even, margin-warning (200%), margin-call (100%)
-    · Left of margin-call is shaded as a danger zone
+  Panel 2 — What-if equity bar chart
+    · One bar per price-drop scenario: 0%, -2%, -4%, -6%, -8%, -10%, -12%, -15%
+    · Bar height = equity remaining at that price
+    · Colour: green (ML > 200%) → orange (warning) → red (margin call)
+    · Orange tick on each bar = margin required at that price
+    · Instantly readable: "at -9% my equity bar goes red"
 
 Usage:
   python 01b_positions_chart.py                        # D1, from 2026-01-01
@@ -363,80 +363,78 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
     ax_price.legend(fontsize=8, loc="lower right", ncol=3)
     ax_price.grid(True, alpha=0.12)
 
-    # ── Panel 2: P&L sensitivity ──────────────────────────────────────────────
-    # Trim to sensible window: don't sweep more than ~15% below current
-    lo_trim = max(current_price * 0.85, positions["price_open"].min() * 0.97)
-    hi_trim = current_price * 1.05
-    mask    = (prices_s >= lo_trim) & (prices_s <= hi_trim)
-    p_trim  = prices_s[mask]
-    u_trim  = upnl_s[mask]
+    # ── Panel 2: What-if equity bar chart ────────────────────────────────────
+    # Each bar = equity remaining if market drops X% from current price.
+    # Orange tick on bar = margin required at that price.
+    # Green = safe (ML > 200%), orange = warning (100–200%), red = margin call.
 
-    ax_sens.axhline(0, color="#555555", lw=0.8)
-    ax_sens.fill_between(p_trim, 0, u_trim,
-                         where=(u_trim >= 0), color="#26a69a", alpha=0.28)
-    ax_sens.fill_between(p_trim, 0, u_trim,
-                         where=(u_trim < 0), color="#ef5350", alpha=0.28)
-    ax_sens.plot(p_trim, u_trim, color="#d8d8d8", lw=1.5)
+    drops     = [0, -2, -4, -6, -8, -10, -12, -15]
+    sc_prices = [current_price * (1 + d / 100) for d in drops]
+    sc_eq     = [float(np.interp(p, prices_s, equity_s)) for p in sc_prices]
+    sc_mg     = [float(np.interp(p, prices_s, margin_s)) for p in sc_prices]
 
-    # Label a key vertical line with a boxed annotation near the x-axis
-    # Uses blended transform: x in data coords, y in axes fraction — stays
-    # at the bottom regardless of ylim.
-    from matplotlib.transforms import blended_transform_factory as _btf
-    _tx = _btf(ax_sens.transData, ax_sens.transAxes)
+    bar_colors = []
+    for eq, mg in zip(sc_eq, sc_mg):
+        ml = eq / mg * 100 if mg > 0 else 9999
+        if eq <= 0:
+            bar_colors.append("#6a0000")   # wipeout
+        elif ml < 100:
+            bar_colors.append("#ef5350")   # margin call
+        elif ml < 200:
+            bar_colors.append("#f08040")   # warning
+        else:
+            bar_colors.append("#26a69a")   # safe
 
-    def _vline(px, label_lines, color, ls="-", lw=1.2):
-        ax_sens.axvline(px, color=color, lw=lw, ls=ls, alpha=0.85)
-        ax_sens.text(px, 0.03, "\n".join(label_lines),
-                     transform=_tx, ha="center", va="bottom",
-                     fontsize=7.5, color=color,
-                     bbox=dict(boxstyle="round,pad=0.3",
-                               facecolor="#111111", edgecolor=color,
-                               alpha=0.85))
+    xs = list(range(len(drops)))
+    ax_sens.bar(xs, sc_eq, color=bar_colors, alpha=0.82, width=0.6, zorder=3)
 
-    # Current price
-    pl_sign = "+" if total_pl >= 0 else ""
-    ax_sens.axvline(current_price, color="#888888", lw=0.9, ls=":", alpha=0.7)
-    ax_sens.scatter([current_price], [total_pl], color="#ffffff", s=65, zorder=7)
-    ax_sens.annotate(
-        f" {pl_sign}{total_pl:,.0f} {info.currency}",
-        xy=(current_price, total_pl),
-        xytext=(current_price + (hi_trim - lo_trim) * 0.02, total_pl),
-        fontsize=9, color="#ffffff", va="center",
+    # Orange tick on each bar showing margin required at that price
+    for i, mg in enumerate(sc_mg):
+        ax_sens.plot([i - 0.32, i + 0.32], [mg, mg],
+                     color="#f08040", lw=1.8, zorder=5)
+
+    # Balance line (cash in — baseline of realised loss territory)
+    ax_sens.axhline(info.balance, color="#888888", lw=0.8, ls="--",
+                    label=f"Balance  {info.balance:,.0f}")
+    ax_sens.axhline(0, color="#444444", lw=0.6)
+
+    # Value + ML% label above/inside each bar
+    eq_max = max(sc_eq)
+    for i, (eq, mg) in enumerate(zip(sc_eq, sc_mg)):
+        ml = eq / mg * 100 if mg > 0 else 9999
+        ml_str = f"ML {ml:.0f}%" if ml < 9999 else "ML —"
+        y_lbl  = max(eq, 0) + eq_max * 0.015
+        ax_sens.text(i, y_lbl,
+                     f"{eq:,.0f}\n{ml_str}",
+                     ha="center", va="bottom", fontsize=7, color="#dddddd")
+
+    # Mark margin-call bar with a label
+    mc_pct = ((mc_price - current_price) / current_price * 100
+              if mc_price else None)
+    if mc_pct is not None:
+        ax_sens.text(
+            0.98, 0.96,
+            f"Margin call at approx {mc_pct:.1f}%  ({mc_price:,.0f})",
+            transform=ax_sens.transAxes, ha="right", va="top",
+            fontsize=8.5, color="#ef5350",
+        )
+
+    ax_sens.set_xticks(xs)
+    ax_sens.set_xticklabels(
+        [f"{d:+.0f}%\n{p:,.0f}" for d, p in zip(drops, sc_prices)],
+        fontsize=8,
     )
-
-    # Break-even
-    if lo_trim < break_even < hi_trim:
-        pct = (break_even - current_price) / current_price * 100
-        _vline(break_even,
-               [f"Break-even", f"{break_even:,.0f}", f"({pct:+.1f}%)"],
-               "#26a69a", ls="--", lw=1.2)
-
-    # ML 200% warning
-    if warn_price and lo_trim < warn_price < hi_trim:
-        pct = (warn_price - current_price) / current_price * 100
-        _vline(warn_price,
-               [f"ML 200%", f"{warn_price:,.0f}", f"({pct:+.1f}%)"],
-               "#f08040", ls=":", lw=1.1)
-
-    # Margin call (100%) — danger zone
-    if mc_price and lo_trim < mc_price < hi_trim:
-        pct = (mc_price - current_price) / current_price * 100
-        ax_sens.axvspan(lo_trim, mc_price, color="#ef5350", alpha=0.06)
-        _vline(mc_price,
-               [f"Margin call", f"{mc_price:,.0f}", f"({pct:+.1f}%)"],
-               "#ef5350", lw=1.3)
-
-    ax_sens.set_xlim(lo_trim, hi_trim)
-    ax_sens.set_xlabel("US500.pro price")
-    ax_sens.set_ylabel(f"Unrealised P&L ({info.currency})")
-    ax_sens.set_title("P&L vs price — how far can it fall before the tower topples?")
+    ax_sens.set_ylabel(f"Equity ({info.currency})")
+    ax_sens.set_title(
+        "Equity at each price scenario  ·  "
+        "green = safe  ·  orange = ML < 200%  ·  red = margin call  "
+        "(orange tick = margin required)"
+    )
     ax_sens.yaxis.set_major_formatter(
         mticker.FuncFormatter(lambda x, _: f"{x:,.0f}")
     )
-    ax_sens.xaxis.set_major_formatter(
-        mticker.FuncFormatter(lambda x, _: f"{x:,.0f}")
-    )
-    ax_sens.grid(True, alpha=0.13)
+    ax_sens.legend(fontsize=8, loc="upper right")
+    ax_sens.grid(True, alpha=0.12, axis="y")
 
     plt.tight_layout()
     return fig
