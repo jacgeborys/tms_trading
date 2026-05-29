@@ -126,21 +126,38 @@ def vwap_entry(positions: pd.DataFrame) -> float:
     )
 
 
+INSTR_LEVERAGE = 20   # US500.pro instrument leverage (fixed, not info.leverage
+                      # which returns max account leverage and would inflate the rate)
+
+
 def derive_pln_rate(positions: pd.DataFrame, info) -> float:
     """
-    Infer PLN-per-USD rate from the broker's reported margin.
-    OANDA computes margin on current price:
-        margin = pln_rate × cs × sum(vol × P_current) / leverage
-    → pln_rate = margin × leverage / (cs × sum(vol × P_current))
-    Falls back to 1.0 if margin data is unavailable.
+    Derive PLN-per-USD exchange rate from actual reported P&L figures.
+
+    For each position with a meaningful price delta we back-compute:
+        profit_PLN = direction × (current − open) × volume × cs × pln_rate
+    The median across all eligible positions is used for robustness.
+
+    Falls back to the margin-based formula (with hardcoded instrument
+    leverage 20) if no position has enough price movement to use.
     """
-    leverage = info.leverage if info.leverage > 0 else 20
+    rates = []
+    for _, p in positions.iterrows():
+        delta = p["price_current"] - p["price_open"]
+        if abs(delta) > 2.0:
+            r = p["profit"] / (p["direction"] * delta * p["volume"] * CONTRACT_SIZE)
+            if 1.0 < r < 12.0:   # sanity: PLN/USD is roughly 3.8–4.2 right now
+                rates.append(r)
+    if rates:
+        return float(np.median(rates))
+
+    # Fallback: margin formula with correct instrument leverage
     if info.margin <= 0:
         return 1.0
     denom = CONTRACT_SIZE * (positions["volume"] * positions["price_current"]).sum()
     if denom <= 0:
         return 1.0
-    return info.margin * leverage / denom
+    return info.margin * INSTR_LEVERAGE / denom
 
 
 def sensitivity_curve(positions: pd.DataFrame, info, pln_rate: float,
@@ -156,7 +173,7 @@ def sensitivity_curve(positions: pd.DataFrame, info, pln_rate: float,
     vols     = positions["volume"].values
     dirs     = positions["direction"].values
     balance  = info.balance
-    leverage = info.leverage if info.leverage > 0 else 20
+    leverage = INSTR_LEVERAGE   # 20 — instrument-specific, not max account leverage
 
     current_price = float(positions["price_current"].mean())
     lo = min(entries.min(), current_price) * 0.90
@@ -264,6 +281,7 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
     n_pos         = len(positions)
     ve            = vwap_entry(positions)
     rate          = derive_pln_rate(positions, info)
+    print(f"  PLN/USD rate inferred: {rate:.4f}")
 
     prices_s, upnl_s, equity_s, margin_s, ml_s = sensitivity_curve(
         positions, info, rate
