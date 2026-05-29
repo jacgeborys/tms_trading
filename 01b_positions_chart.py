@@ -41,7 +41,7 @@ from mt5_client import connect, disconnect
 import cache
 
 CONTRACT_SIZE = 50.0
-ENTRY_COLOR   = "#5bc8f5"   # single accent colour for all entry markers
+ENTRY_COLOR   = "#ffe033"   # single accent colour for all entry markers
 
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
