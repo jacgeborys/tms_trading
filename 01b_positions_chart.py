@@ -316,10 +316,10 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
     times_naive = (times_raw.dt.tz_localize(None)
                    if times_raw.dt.tz is not None else times_raw)
 
-    # Circle size proportional to lot size (visible even when all equal)
-    min_vol  = positions["volume"].min()
-    max_vol  = positions["volume"].max()
-    vol_span = max_vol - min_vol if max_vol > min_vol else 1.0
+    # Circle AREA directly proportional to lot size — 0.01 = 2× area of 0.005.
+    # s parameter in scatter is area in points², so area ∝ volume gives correct
+    # proportional bubbles (no offset that would skew small positions).
+    K = 12000   # tune: 0.005 lots → s=60, 0.01 → s=120, 0.02 → s=240
 
     # More lenient time tolerance for wide timeframes (D1 has weekend gaps)
     time_tol = pd.Timedelta(days=5 if tf in ("D1", "H4") else 1)
@@ -335,7 +335,7 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
             continue
         xs.append(bidx)
         ys.append(p["price_open"])
-        ss.append(60 + 280 * (p["volume"] - min_vol) / vol_span)
+        ss.append(max(30, p["volume"] * K))   # min 30 so tiny lots remain visible
 
     ax_price.scatter(xs, ys, s=ss,
                      color=ENTRY_COLOR, alpha=0.55,
