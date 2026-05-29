@@ -3,7 +3,7 @@
 
 Three-panel FOMO dashboard for all currently open US500.pro positions:
 
-  Panel 1 — M5 candlestick chart (last ~2 days)
+  Panel 1 — D1 candlestick chart (default: 2026-01-01 → now)
     · Horizontal entry line per position (colour-coded, unique per ticket)
     · Volume-weighted average entry (VWAP of entries) — gold line
     · Vertical marker + triangle at the bar where each position was opened
@@ -23,9 +23,10 @@ Three-panel FOMO dashboard for all currently open US500.pro positions:
     · Left of margin-call is shaded as a danger zone
 
 Usage:
-  python 01b_positions_chart.py
-  python 01b_positions_chart.py --bars 288    # 1 day of M5
-  python 01b_positions_chart.py --tf M15      # wider view
+  python 01b_positions_chart.py                        # D1, from 2026-01-01
+  python 01b_positions_chart.py --since 2025-09-01     # earlier start
+  python 01b_positions_chart.py --tf H1                # hourly bars
+  python 01b_positions_chart.py --bars 576             # last 576 M5 bars (ignores --since)
 
 Outputs:
   results/charts/01b_positions_chart.png
@@ -33,7 +34,7 @@ Outputs:
 
 import sys
 import argparse
-from datetime import timezone
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -87,24 +88,43 @@ def get_positions() -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("time_open").reset_index(drop=True)
 
 
-def get_price_data(symbol: str, tf: str, n_bars: int) -> pd.DataFrame:
-    """Load from cache; fall back to live MT5 fetch."""
-    tf_map = {
-        "M1":  mt5.TIMEFRAME_M1,
-        "M5":  mt5.TIMEFRAME_M5,
-        "M15": mt5.TIMEFRAME_M15,
-        "M30": mt5.TIMEFRAME_M30,
-        "H1":  mt5.TIMEFRAME_H1,
-    }
+_TF_MAP = {
+    "M1":  mt5.TIMEFRAME_M1,
+    "M5":  mt5.TIMEFRAME_M5,
+    "M15": mt5.TIMEFRAME_M15,
+    "M30": mt5.TIMEFRAME_M30,
+    "H1":  mt5.TIMEFRAME_H1,
+    "H4":  mt5.TIMEFRAME_H4,
+    "D1":  mt5.TIMEFRAME_D1,
+}
 
+
+def get_price_data(symbol: str, tf: str, n_bars: int,
+                   since: datetime = None) -> pd.DataFrame:
+    """
+    Load price data.  Two modes:
+      • since=<datetime>  — date-range fetch via copy_rates_range (always live)
+      • since=None        — try cache first, fall back to last n_bars from MT5
+    """
+    if tf not in _TF_MAP:
+        return pd.DataFrame()
+
+    if since is not None:
+        now = datetime.now(tz=timezone.utc)
+        rates = mt5.copy_rates_range(symbol, _TF_MAP[tf], since, now)
+        if rates is None or not len(rates):
+            return pd.DataFrame()
+        df = pd.DataFrame(rates)
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+        return df.reset_index(drop=True)
+
+    # n_bars mode — cache first
     df = cache.load_ohlcv(symbol, tf)
     if df is not None and len(df) >= n_bars:
         df = df.tail(n_bars).reset_index(drop=True)
         return df
 
-    if tf not in tf_map:
-        return pd.DataFrame()
-    rates = mt5.copy_rates_from_pos(symbol, tf_map[tf], 0, n_bars)
+    rates = mt5.copy_rates_from_pos(symbol, _TF_MAP[tf], 0, n_bars)
     if rates is None or not len(rates):
         return pd.DataFrame()
     df = pd.DataFrame(rates)
@@ -242,10 +262,11 @@ def draw_candles(ax, df: pd.DataFrame):
         ax.plot([i, i], [l, h], color=color, lw=0.7, alpha=0.85, zorder=2)
 
 
-def time_ticks(df: pd.DataFrame, max_ticks: int = 10):
-    step = max(1, len(df) // max_ticks)
-    idxs = list(range(0, len(df), step))
-    labels = [df["time"].iloc[i].strftime("%d %b\n%H:%M") for i in idxs]
+def time_ticks(df: pd.DataFrame, tf: str, max_ticks: int = 10):
+    step   = max(1, len(df) // max_ticks)
+    idxs   = list(range(0, len(df), step))
+    fmt    = "%d %b" if tf in ("D1", "H4", "H1") else "%d %b\n%H:%M"
+    labels = [df["time"].iloc[i].strftime(fmt) for i in idxs]
     return idxs, labels
 
 
@@ -365,12 +386,13 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
         if p["tp"] > 0:
             ax_price.axhline(p["tp"], color="#26a69a", lw=0.7, ls=":", alpha=0.5)
 
-    xt, xl = time_ticks(price_df)
+    xt, xl = time_ticks(price_df, tf)
     ax_price.set_xticks(xt)
     ax_price.set_xticklabels(xl, fontsize=7)
     ax_price.set_xlim(-1, n + 1)
     ax_price.set_ylabel("US500.pro")
-    ax_price.set_title(f"Price chart — {tf}  ({n} bars,  last bar = current)")
+    first_bar = price_df["time"].iloc[0].strftime("%d %b %Y")
+    ax_price.set_title(f"Price chart — {tf}  ({n} bars,  {first_bar} → now)")
     ax_price.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
     ax_price.legend(fontsize=7.5, loc="upper left", ncol=2)
     ax_price.grid(True, alpha=0.12)
@@ -509,10 +531,12 @@ def main():
     parser = argparse.ArgumentParser(
         description="Live position map on actual US500.pro price chart."
     )
-    parser.add_argument("--tf", default="M5",
-                        help="Timeframe for price chart (M1/M5/M15/M30/H1, default M5)")
-    parser.add_argument("--bars", type=int, default=576,
-                        help="Bars to show (~2 days of M5). Default: 576")
+    parser.add_argument("--tf", default="D1",
+                        help="Timeframe for price chart (M5/M15/H1/D1, default D1)")
+    parser.add_argument("--since", default="2026-01-01",
+                        help="Start date YYYY-MM-DD (default 2026-01-01)")
+    parser.add_argument("--bars", type=int, default=0,
+                        help="Fixed bar count — overrides --since when set")
     args = parser.parse_args()
 
     print("Connecting to MT5...")
@@ -540,10 +564,18 @@ def main():
 
         print(f"  {len(positions)} US500.pro position(s) found.")
 
-        print(f"Loading price data ({args.tf}, last {args.bars} bars)...")
-        price_df = get_price_data("US500.pro", args.tf, args.bars)
+        if args.bars > 0:
+            since_dt = None
+            print(f"Loading price data ({args.tf}, last {args.bars} bars)...")
+        else:
+            since_dt = datetime.strptime(args.since, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
+            print(f"Loading price data ({args.tf}, from {args.since})...")
+
+        price_df = get_price_data("US500.pro", args.tf, args.bars, since=since_dt)
         if price_df.empty:
-            print("ERROR: No price data. Run 01_fetch_data.py first.")
+            print("ERROR: No price data. Is MT5 open? Try --bars 500 as fallback.")
             sys.exit(1)
         price_df = price_df.reset_index(drop=True)
         print(f"  {len(price_df)} bars loaded.")
