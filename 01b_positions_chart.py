@@ -4,22 +4,16 @@
 Three-panel FOMO dashboard for all currently open US500.pro positions:
 
   Panel 1 — D1 candlestick chart (default: 2026-01-01 → now)
-    · Horizontal entry line per position (colour-coded, unique per ticket)
+    · Circles at (entry_time, entry_price), size ∝ lot size, one accent colour
     · Volume-weighted average entry (VWAP of entries) — gold line
-    · Vertical marker + triangle at the bar where each position was opened
-    · Right-side annotation: lot size, P&L in PLN, time since open
+    · White dotted line = current price
+    · Gap text: how many pts / % above average entry
 
-  Panel 2 — Tower view (shares Y-axis / price axis with Panel 1)
-    · One horizontal brick per position at its entry price
-    · Brick width = lot size  →  shows the "weight" of each level
-    · Current price and VWAP lines cut across the tower
-    · Underwater bricks are visually distinguishable from profitable ones
-
-  Panel 3 — P&L sensitivity curve  ("will the tower topple?")
-    · X-axis: hypothetical US500 price  (sweeps from deep drawdown to +5%)
+  Panel 2 — P&L sensitivity curve  ("will the tower topple?")
+    · X-axis: hypothetical US500 price (trimmed to ±15% of current)
     · Y-axis: total unrealised P&L in account currency
-    · Marks: current price, break-even price, margin-warning (200%),
-      and margin-call price (100% level — the hard stop-out)
+    · Key levels annotated directly on their vertical lines:
+      break-even, margin-warning (200%), margin-call (100%)
     · Left of margin-call is shaded as a danger zone
 
 Usage:
@@ -41,25 +35,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.ticker as mticker
-import matplotlib.patches as mpatches
 import MetaTrader5 as mt5
 
 from mt5_client import connect, disconnect
 import cache
 
 CONTRACT_SIZE = 50.0
-
-# Colour palette — one per position, cycles if >8 open
-_PALETTE = [
-    "#f0c040",  # gold
-    "#40c0f0",  # sky blue
-    "#e040a0",  # pink
-    "#80f080",  # mint
-    "#f08040",  # orange
-    "#c040f0",  # violet
-    "#40f0c0",  # teal
-    "#f04040",  # coral
-]
+ENTRY_COLOR   = "#5bc8f5"   # single accent colour for all entry markers
 
 
 # ── Data fetching ─────────────────────────────────────────────────────────────
@@ -276,250 +258,185 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
          info, tf: str) -> plt.Figure:
     plt.style.use("dark_background")
 
-    leverage     = info.leverage if info.leverage > 0 else 20
     current_price = float(positions["price_current"].iloc[0])
     total_pl      = positions["profit"].sum()
     total_vol     = positions["volume"].sum()
     n_pos         = len(positions)
     ve            = vwap_entry(positions)
     rate          = derive_pln_rate(positions, info)
-    now           = pd.Timestamp.now(tz="UTC")
 
     prices_s, upnl_s, equity_s, margin_s, ml_s = sensitivity_curve(
         positions, info, rate
     )
-
-    # Key price levels
-    break_even = _find_crossing(prices_s, upnl_s, 0.0)
-    if break_even is None:
-        break_even = ve  # fallback: VWAP of entries
+    break_even = _find_crossing(prices_s, upnl_s, 0.0) or ve
     mc_price   = _find_crossing(prices_s, ml_s, 100.0)
     warn_price = _find_crossing(prices_s, ml_s, 200.0)
 
     print_summary(positions, info, ve, break_even, mc_price, warn_price)
 
-    # ── Layout ────────────────────────────────────────────────────────────────
-    fig = plt.figure(figsize=(21, 13))
-    gs  = gridspec.GridSpec(
-        2, 2, figure=fig,
-        width_ratios=[4, 1],
-        height_ratios=[3, 2],
-        hspace=0.38, wspace=0.04,
-    )
-    ax_price = fig.add_subplot(gs[0, 0])
-    ax_tower = fig.add_subplot(gs[0, 1], sharey=ax_price)
-    ax_sens  = fig.add_subplot(gs[1, :])
+    # ── Layout: 2 panels ─────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(20, 12))
+    gs  = gridspec.GridSpec(2, 1, figure=fig,
+                            height_ratios=[3, 2], hspace=0.40)
+    ax_price = fig.add_subplot(gs[0])
+    ax_sens  = fig.add_subplot(gs[1])
 
     sp = "+" if total_pl >= 0 else ""
     fig.suptitle(
-        f"Position Map — US500.pro  |  {n_pos} open  {total_vol:.3f} lots  |  "
+        f"Position Map — US500.pro  |  {n_pos} entries  {total_vol:.3f} lots  |  "
         f"P&L {sp}{total_pl:,.0f} {info.currency}  |  "
         f"Balance {info.balance:,.0f}  Equity {info.equity:,.0f}  "
         f"ML {info.margin_level:.0f}%",
         fontsize=11,
     )
 
-    # ── Panel 1: Candlestick price chart ──────────────────────────────────────
+    # ── Panel 1: Price chart with entry circles ───────────────────────────────
     draw_candles(ax_price, price_df)
     n = len(price_df)
 
-    # Normalise price_df times to tz-naive for comparison
-    times_raw = price_df["time"]
-    if times_raw.dt.tz is not None:
-        times_naive = times_raw.dt.tz_localize(None)
-    else:
-        times_naive = times_raw
+    times_raw   = price_df["time"]
+    times_naive = (times_raw.dt.tz_localize(None)
+                   if times_raw.dt.tz is not None else times_raw)
 
-    for idx, (_, p) in enumerate(positions.iterrows()):
-        color     = _PALETTE[idx % len(_PALETTE)]
-        is_profit = p["profit"] >= 0
-        ls        = "--" if is_profit else "-."
+    # Circle size proportional to lot size (visible even when all equal)
+    min_vol  = positions["volume"].min()
+    max_vol  = positions["volume"].max()
+    vol_span = max_vol - min_vol if max_vol > min_vol else 1.0
 
-        # Entry price horizontal line
-        ax_price.axhline(p["price_open"], color=color, lw=1.4, ls=ls, alpha=0.85, zorder=3)
+    # More lenient time tolerance for wide timeframes (D1 has weekend gaps)
+    time_tol = pd.Timedelta(days=5 if tf in ("D1", "H4") else 1)
 
-        # Vertical marker at entry time
-        t_open = p["time_open"]
-        if t_open.tzinfo is not None:
-            t_open = t_open.tz_localize(None)
-        diff = (times_naive - t_open).abs()
-        bar_idx = diff.idxmin()
-        if diff[bar_idx] < pd.Timedelta(hours=4):
-            ax_price.axvline(bar_idx, color=color, lw=0.8, ls=":", alpha=0.45)
-            ax_price.scatter([bar_idx], [p["price_open"]],
-                             color=color, s=65, zorder=6, marker="^",
-                             edgecolors="#000000", linewidths=0.5)
-
-        # Right-side annotation
-        age_h   = (now - p["time_open"]).total_seconds() / 3600
-        age_str = f"{age_h:.0f}h" if age_h < 48 else f"{age_h/24:.1f}d"
-        sign    = "+" if p["profit"] >= 0 else ""
-        label   = (f" {p['volume']:.3f}L @ {p['price_open']:.1f}"
-                   f"  {sign}{p['profit']:.0f}  ({age_str})")
-        ax_price.annotate(
-            label,
-            xy=(n - 1, p["price_open"]),
-            xytext=(n + 1, p["price_open"]),
-            fontsize=7.5, color=color, va="center",
-            annotation_clip=False,
-        )
-
-    # VWAP of entries — gold anchor line
-    ax_price.axhline(ve, color="#ffd700", lw=2.2, ls="-", alpha=0.9, zorder=4,
-                     label=f"Avg entry  {ve:.1f}")
-
-    # Current price
-    ax_price.axhline(current_price, color="#ffffff", lw=1.0, ls=":",
-                     alpha=0.75, zorder=4, label=f"Current  {current_price:.1f}")
-
-    # Soft shading between avg entry and current
-    lo_fill = min(ve, current_price)
-    hi_fill = max(ve, current_price)
-    fill_color = "#26a69a" if current_price >= ve else "#ef5350"
-    ax_price.fill_between([-1, n + 1], [lo_fill] * 2, [hi_fill] * 2,
-                           color=fill_color, alpha=0.06)
-
-    # SL / TP lines if set
+    xs, ys, ss = [], [], []
     for _, p in positions.iterrows():
-        if p["sl"] > 0:
-            ax_price.axhline(p["sl"], color="#ef5350", lw=0.7, ls=":", alpha=0.5)
-        if p["tp"] > 0:
-            ax_price.axhline(p["tp"], color="#26a69a", lw=0.7, ls=":", alpha=0.5)
+        t = p["time_open"]
+        if t.tzinfo is not None:
+            t = t.tz_localize(None)
+        diff = (times_naive - t).abs()
+        bidx = diff.idxmin()
+        if diff[bidx] > time_tol:
+            continue
+        xs.append(bidx)
+        ys.append(p["price_open"])
+        ss.append(60 + 280 * (p["volume"] - min_vol) / vol_span)
+
+    ax_price.scatter(xs, ys, s=ss,
+                     color=ENTRY_COLOR, alpha=0.55,
+                     edgecolors="#ffffff", linewidths=0.4,
+                     zorder=6, label=f"{n_pos} entries")
+
+    # Gold VWAP entry
+    ax_price.axhline(ve, color="#ffd700", lw=2.0, ls="-", alpha=0.9, zorder=4,
+                     label=f"Avg entry  {ve:,.0f}")
+
+    # White dotted current price
+    ax_price.axhline(current_price, color="#ffffff", lw=1.0, ls=":",
+                     alpha=0.75, zorder=4, label=f"Current  {current_price:,.0f}")
+
+    # Soft fill between avg entry and current
+    lo_fill  = min(ve, current_price)
+    hi_fill  = max(ve, current_price)
+    fill_col = "#26a69a" if current_price >= ve else "#ef5350"
+    ax_price.fill_between([-1, n + 1], [lo_fill] * 2, [hi_fill] * 2,
+                          color=fill_col, alpha=0.07)
+
+    # Gap annotation top-left
+    gap_pts = current_price - ve
+    gap_pct = gap_pts / ve * 100
+    sg      = "+" if gap_pts >= 0 else ""
+    ax_price.text(
+        0.012, 0.97,
+        f"{sg}{gap_pts:.0f} pts  ({sg}{gap_pct:.1f}%)  above avg entry",
+        transform=ax_price.transAxes, fontsize=8.5,
+        color="#ffd700", va="top",
+    )
 
     xt, xl = time_ticks(price_df, tf)
     ax_price.set_xticks(xt)
-    ax_price.set_xticklabels(xl, fontsize=7)
+    ax_price.set_xticklabels(xl, fontsize=7.5)
     ax_price.set_xlim(-1, n + 1)
     ax_price.set_ylabel("US500.pro")
     first_bar = price_df["time"].iloc[0].strftime("%d %b %Y")
     ax_price.set_title(f"Price chart — {tf}  ({n} bars,  {first_bar} → now)")
-    ax_price.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-    ax_price.legend(fontsize=7.5, loc="upper left", ncol=2)
+    ax_price.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda x, _: f"{x:,.0f}")
+    )
+    ax_price.legend(fontsize=8, loc="lower right", ncol=3)
     ax_price.grid(True, alpha=0.12)
 
-    # ── Panel 2: Tower view ───────────────────────────────────────────────────
-    # Each brick: y centred on entry_price, height = visual unit, width = lot size
-    price_range = price_df["high"].max() - price_df["low"].min()
-    brick_h     = max(2.5, price_range * 0.012)   # at least 2.5 pts tall
+    # ── Panel 2: P&L sensitivity ──────────────────────────────────────────────
+    # Trim to sensible window: don't sweep more than ~15% below current
+    lo_trim = max(current_price * 0.85, positions["price_open"].min() * 0.97)
+    hi_trim = current_price * 1.05
+    mask    = (prices_s >= lo_trim) & (prices_s <= hi_trim)
+    p_trim  = prices_s[mask]
+    u_trim  = upnl_s[mask]
 
-    for idx, (_, p) in enumerate(positions.iterrows()):
-        color     = _PALETTE[idx % len(_PALETTE)]
-        is_profit = p["profit"] >= 0
-        edge      = "#ffffff"
-        alpha     = 0.82 if is_profit else 0.55
+    ax_sens.axhline(0, color="#555555", lw=0.8)
+    ax_sens.fill_between(p_trim, 0, u_trim,
+                         where=(u_trim >= 0), color="#26a69a", alpha=0.28)
+    ax_sens.fill_between(p_trim, 0, u_trim,
+                         where=(u_trim < 0), color="#ef5350", alpha=0.28)
+    ax_sens.plot(p_trim, u_trim, color="#d8d8d8", lw=1.5)
 
-        rect = mpatches.Rectangle(
-            (0, p["price_open"] - brick_h / 2),
-            p["volume"], brick_h,
-            facecolor=color, edgecolor=edge,
-            linewidth=0.6, alpha=alpha, zorder=3,
-        )
-        ax_tower.add_patch(rect)
+    # Label a key vertical line with a boxed annotation near the x-axis
+    # Uses blended transform: x in data coords, y in axes fraction — stays
+    # at the bottom regardless of ylim.
+    from matplotlib.transforms import blended_transform_factory as _btf
+    _tx = _btf(ax_sens.transData, ax_sens.transAxes)
 
-        # Lot label inside brick
-        ax_tower.text(
-            p["volume"] / 2, p["price_open"],
-            f"{p['volume']:.2f}",
-            ha="center", va="center",
-            fontsize=6.5, color="#000000", fontweight="bold",
-        )
-
-    ax_tower.axhline(current_price, color="#ffffff", lw=1.4, ls="--",
-                     alpha=0.85, zorder=5)
-    ax_tower.axhline(ve, color="#ffd700", lw=1.8, ls="-", alpha=0.9, zorder=5)
-
-    ax_tower.text(0.02, current_price, f" {current_price:.0f}",
-                  transform=ax_tower.get_yaxis_transform(),
-                  fontsize=7, color="#ffffff", va="center")
-    ax_tower.text(0.02, ve, f" {ve:.0f}",
-                  transform=ax_tower.get_yaxis_transform(),
-                  fontsize=7, color="#ffd700", va="center")
-
-    max_lot = positions["volume"].max()
-    ax_tower.set_xlim(0, max_lot * 1.8)
-    ax_tower.set_xlabel("Lots", fontsize=8)
-    ax_tower.set_title("Tower\n(width = lots)", fontsize=8.5)
-    ax_tower.xaxis.set_major_locator(mticker.MaxNLocator(3))
-    ax_tower.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:.2f}"))
-    plt.setp(ax_tower.get_yticklabels(), visible=False)
-    ax_tower.grid(True, alpha=0.12, axis="x")
-
-    # ── Panel 3: P&L sensitivity curve ────────────────────────────────────────
-    ax_sens.axhline(0, color="#666666", lw=0.8, ls="-")
-
-    ax_sens.fill_between(prices_s, 0, upnl_s,
-                         where=(upnl_s >= 0), color="#26a69a", alpha=0.30,
-                         label="Profit zone")
-    ax_sens.fill_between(prices_s, 0, upnl_s,
-                         where=(upnl_s < 0), color="#ef5350", alpha=0.30,
-                         label="Loss zone")
-    ax_sens.plot(prices_s, upnl_s, color="#f0f0f0", lw=1.6,
-                 label="Total unrealised P&L")
+    def _vline(px, label_lines, color, ls="-", lw=1.2):
+        ax_sens.axvline(px, color=color, lw=lw, ls=ls, alpha=0.85)
+        ax_sens.text(px, 0.03, "\n".join(label_lines),
+                     transform=_tx, ha="center", va="bottom",
+                     fontsize=7.5, color=color,
+                     bbox=dict(boxstyle="round,pad=0.3",
+                               facecolor="#111111", edgecolor=color,
+                               alpha=0.85))
 
     # Current price
-    ax_sens.axvline(current_price, color="#ffffff", lw=1.3, ls=":",
-                    label=f"Current  {current_price:,.0f}")
-    ax_sens.scatter([current_price], [total_pl], color="#ffffff", s=70, zorder=7)
+    pl_sign = "+" if total_pl >= 0 else ""
+    ax_sens.axvline(current_price, color="#888888", lw=0.9, ls=":", alpha=0.7)
+    ax_sens.scatter([current_price], [total_pl], color="#ffffff", s=65, zorder=7)
+    ax_sens.annotate(
+        f" {pl_sign}{total_pl:,.0f} {info.currency}",
+        xy=(current_price, total_pl),
+        xytext=(current_price + (hi_trim - lo_trim) * 0.02, total_pl),
+        fontsize=9, color="#ffffff", va="center",
+    )
 
     # Break-even
-    if prices_s[0] < break_even < prices_s[-1]:
-        ax_sens.axvline(break_even, color="#26a69a", lw=1.3, ls="--",
-                        label=f"Break-even  {break_even:,.1f}")
+    if lo_trim < break_even < hi_trim:
+        pct = (break_even - current_price) / current_price * 100
+        _vline(break_even,
+               [f"Break-even", f"{break_even:,.0f}", f"({pct:+.1f}%)"],
+               "#26a69a", ls="--", lw=1.2)
 
-    # Margin warning (200%)
-    if warn_price is not None and prices_s[0] < warn_price < prices_s[-1]:
-        upnl_at_warn = float(np.interp(warn_price, prices_s, upnl_s))
-        ax_sens.axvline(warn_price, color="#f08040", lw=1.1, ls=":",
-                        label=f"ML 200%  {warn_price:,.0f}")
-        ax_sens.scatter([warn_price], [upnl_at_warn], color="#f08040", s=70, zorder=7)
+    # ML 200% warning
+    if warn_price and lo_trim < warn_price < hi_trim:
+        pct = (warn_price - current_price) / current_price * 100
+        _vline(warn_price,
+               [f"ML 200%", f"{warn_price:,.0f}", f"({pct:+.1f}%)"],
+               "#f08040", ls=":", lw=1.1)
 
-    # Margin call (100%)
-    if mc_price is not None and prices_s[0] < mc_price < prices_s[-1]:
-        upnl_at_mc = float(np.interp(mc_price, prices_s, upnl_s))
-        ax_sens.axvline(mc_price, color="#ef5350", lw=1.5, ls="-",
-                        label=f"Margin call  {mc_price:,.0f}")
-        ax_sens.scatter([mc_price], [upnl_at_mc], color="#ef5350", s=80, zorder=7,
-                        marker="X")
-        ax_sens.axvspan(prices_s[0], mc_price, color="#ef5350", alpha=0.07)
+    # Margin call (100%) — danger zone
+    if mc_price and lo_trim < mc_price < hi_trim:
+        pct = (mc_price - current_price) / current_price * 100
+        ax_sens.axvspan(lo_trim, mc_price, color="#ef5350", alpha=0.06)
+        _vline(mc_price,
+               [f"Margin call", f"{mc_price:,.0f}", f"({pct:+.1f}%)"],
+               "#ef5350", lw=1.3)
 
-    # Annotate current P&L on curve
-    cur_sign = "+" if total_pl >= 0 else ""
-    ax_sens.annotate(
-        f" {cur_sign}{total_pl:,.0f} PLN",
-        xy=(current_price, total_pl),
-        xytext=(current_price + (prices_s[-1] - prices_s[0]) * 0.015, total_pl),
-        fontsize=8, color="#f0f0f0", va="center", annotation_clip=False,
-    )
-
-    # Annotate distances to key levels
-    if mc_price is not None:
-        dist_mc = current_price - mc_price
-        ax_sens.text(
-            0.01, 0.04,
-            f"Margin call {dist_mc:+.0f} pts  ({(mc_price - current_price) / current_price * 100:.1f}%)",
-            transform=ax_sens.transAxes, fontsize=8, color="#ef5350",
-        )
-    if warn_price is not None:
-        dist_w = current_price - warn_price
-        ax_sens.text(
-            0.01, 0.09,
-            f"ML 200% warn {dist_w:+.0f} pts  ({(warn_price - current_price) / current_price * 100:.1f}%)",
-            transform=ax_sens.transAxes, fontsize=8, color="#f08040",
-        )
-
+    ax_sens.set_xlim(lo_trim, hi_trim)
     ax_sens.set_xlabel("US500.pro price")
     ax_sens.set_ylabel(f"Unrealised P&L ({info.currency})")
-    ax_sens.set_title(
-        "P&L sensitivity — how far can it fall before the tower topples?"
-    )
+    ax_sens.set_title("P&L vs price — how far can it fall before the tower topples?")
     ax_sens.yaxis.set_major_formatter(
         mticker.FuncFormatter(lambda x, _: f"{x:,.0f}")
     )
     ax_sens.xaxis.set_major_formatter(
         mticker.FuncFormatter(lambda x, _: f"{x:,.0f}")
     )
-    ax_sens.legend(fontsize=8, ncol=6, loc="upper left")
-    ax_sens.grid(True, alpha=0.14)
+    ax_sens.grid(True, alpha=0.13)
 
     plt.tight_layout()
     return fig
