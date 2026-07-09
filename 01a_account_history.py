@@ -491,16 +491,34 @@ def print_swap_analysis(trade_deals: pd.DataFrame, currency: str = "PLN"):
 
 # ── Rollover model ─────────────────────────────────────────────────────────────
 
+# Official OANDA TMS rollover dates for US500.pro (from broker PDF "Tabela rolowań 2026").
+# Key: (year, month) → day-of-month.  OANDA rolls on the Wednesday before the
+# 3rd Friday of the expiry month (i.e. 3rd Friday − 2 days).
+_OANDA_US500_ROLLOVER_DAYS = {
+    (2026, 3):  18,
+    (2026, 6):  17,
+    (2026, 9):  16,
+    (2026, 12): 16,
+}
+
+
 def compute_rollover_dates(year_start: int = 2020, year_end: int = 2030):
-    """Return 3rd-Friday-of-March/June/September/December dates as UTC Timestamps."""
+    """
+    Return US500.pro rollover dates as UTC Timestamps.
+
+    Uses official OANDA broker table for 2026; for all other years uses
+    'Wednesday before 3rd Friday' (= 3rd Friday − 2 days) as approximation.
+    """
     import calendar
     dates = []
     for year in range(year_start, year_end + 1):
         for month in (3, 6, 9, 12):
-            # calendar.monthcalendar returns weeks; Friday = index 4
-            fridays = [w[4] for w in calendar.monthcalendar(year, month) if w[4] != 0]
-            third_friday = fridays[2]
-            dates.append(pd.Timestamp(year, month, third_friday, tz="UTC"))
+            if (year, month) in _OANDA_US500_ROLLOVER_DAYS:
+                day = _OANDA_US500_ROLLOVER_DAYS[(year, month)]
+            else:
+                fridays = [w[4] for w in calendar.monthcalendar(year, month) if w[4] != 0]
+                day = fridays[2] - 2   # 3rd Friday − 2 = rollover Wednesday
+            dates.append(pd.Timestamp(year, month, day, tz="UTC"))
     return sorted(dates)
 
 
@@ -543,6 +561,7 @@ def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
 
     print(f"\n{'═'*60}")
     print(f"  ROLLOVER MODEL  ({currency})")
+    print(f"  Dates: official OANDA table for 2026; 'Wed before 3rd Fri' elsewhere")
     print(f"{'═'*60}")
 
     # ── Per-rollover cost back-calculation ────────────────────────────────────

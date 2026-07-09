@@ -17,7 +17,9 @@ Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 conne
 | Leverage | 20× |
 | Spread | **Fixed 0.7 pts at all hours** (confirmed from 66,959 ticks) |
 | Lot limits | 0.001 – 4.0, step 0.001 |
-| Overnight swap | None |
+| Overnight swap | None (no daily financing charge) |
+| Quarterly rollover | Yes — charged as swap on the position at rollover date. OANDA rolls on **Wednesday before 3rd Friday** of Mar/Jun/Sep/Dec. 2026 dates: Mar 18, Jun 17, Sep 16, Dec 16. Source: `data/tabela_rolowan_1.01.2026_pl_mt5_0.pdf` |
+| Rollover cost (observed) | March 2026: −9.52 PLN / 0.001 lot; June 2026: −12.53 PLN / 0.001 lot (back-calculated from open positions via `print_rollover_model()` in 01a) |
 | MT5 data depth | M1: ~7 weeks, M5: ~8.5 months, H1: ~8.5 years, D1: ~16 years |
 
 The user trades exclusively US500 with frequent small operations (scalping / intraday).
