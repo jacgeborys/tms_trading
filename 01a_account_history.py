@@ -161,7 +161,8 @@ def get_open_positions() -> pd.DataFrame:
 def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                        trade_deals: pd.DataFrame, open_deals: pd.DataFrame,
                        margin_used: float, leverage: int,
-                       t_start: pd.Timestamp = None) -> pd.DataFrame:
+                       t_start: pd.Timestamp = None,
+                       rollover_costs: dict = None) -> pd.DataFrame:
     """
     Build a per-bar time series of equity / free_margin / margin_level
     from the earliest open position to now, using cached M5 price data.
@@ -286,14 +287,29 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             upnl = np.zeros(n)
         total_upnl += upnl
 
-        # Add accumulated swap as a flat offset from position open.
-        # Swap is charged at rollover dates (not daily), so true timing would
-        # require stepping it in at each quarterly rollover.  Flat approximation
-        # makes current equity exact; historical shape is slightly pessimistic
-        # before the first rollover date but correct afterwards.
+        # Step swap in at each rollover date the position lived through.
+        # This produces visible equity drops on rollover dates rather than a
+        # flat offset from position open.  Costs are back-calculated per-rollover
+        # and scaled to match the actual accumulated swap exactly.
         swap_pln = float(pos.get("swap", 0.0))
         if swap_pln != 0.0:
-            total_upnl += np.where(active, swap_pln, 0.0)
+            pos_open_tz = pos["time_open"]
+            if pos_open_tz.tzinfo is None:
+                pos_open_tz = pos_open_tz.tz_localize("UTC")
+            applicable = sorted(
+                [(r, c) for r, c in (rollover_costs or {}).items() if r > pos_open_tz]
+            )
+            if applicable:
+                vol         = float(pos["volume"])
+                model_total = sum(c * (vol / 0.001) for _, c in applicable)
+                scale       = swap_pln / model_total if abs(model_total) > 1e-6 else 1.0
+                for rdate, cost_per_001 in applicable:
+                    r_naive  = np.datetime64(rdate.tz_localize(None))
+                    cost_pln = cost_per_001 * (vol / 0.001) * scale
+                    total_upnl += np.where(bar_times >= r_naive, cost_pln, 0.0)
+            else:
+                # No rollover cost data — fall back to flat offset
+                total_upnl += np.where(active, swap_pln, 0.0)
 
         # Margin steps up when position opens; scaled to account currency
         pos_margin = pos["price_open"] * pos["volume"] * contract_size / leverage * margin_scale
@@ -522,60 +538,83 @@ def compute_rollover_dates(year_start: int = 2020, year_end: int = 2030):
     return sorted(dates)
 
 
-def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
+def compute_rollover_costs(positions: pd.DataFrame) -> dict:
     """
-    Back-calculate the cost of each historical rollover from open position swap data.
+    Back-calculate the cost per 0.001 lot for each historical rollover date.
 
     Logic:
       - Sort past rollover dates descending: R0 (most recent), R1, R2, …
-      - A position opened before Rk has gone through rollovers R0…Rk → n_rollovers = k+1
-      - Cost(R0) = avg_swap_per_001(n=1) − avg_swap_per_001(n=0)
-      - Cost(Rk) = avg_swap_per_001(n=k+1) − avg_swap_per_001(n=k)
+      - Positions that lived through k rollovers have swap = sum(cost_R0 … cost_Rk-1)
+      - Group positions by rollover count; take mean swap/0.001lot per group
+      - Cost(Rk) = avg_swap(n=k+1) − avg_swap(n=k)
+
+    Returns: {pd.Timestamp (UTC) → cost_per_0001_lot (float)}
     """
     if positions.empty or "swap" not in positions.columns \
             or "time_open" not in positions.columns:
-        return
+        return {}
 
-    now = pd.Timestamp.now(tz="UTC")
-    all_rollover_dates = compute_rollover_dates(2020, 2030)
-    past_rollovers     = [d for d in all_rollover_dates if d <= now]
-    past_desc          = sorted(past_rollovers, reverse=True)   # R0, R1, R2, …
+    now          = pd.Timestamp.now(tz="UTC")
+    past_rollovers = [d for d in compute_rollover_dates() if d <= now]
+    past_desc      = sorted(past_rollovers, reverse=True)
 
-    # For each position: normalise timezone, count how many past rollovers
-    # occurred AFTER the position was opened (i.e. the position was alive during them).
     rows = []
     for _, pos in positions.iterrows():
         t_open = pos["time_open"]
         if t_open.tzinfo is None:
             t_open = t_open.tz_localize("UTC")
-        n = sum(1 for r in past_rollovers if r > t_open)
+        n   = sum(1 for r in past_rollovers if r > t_open)
         vol = float(pos["volume"])
         swap_per_001 = float(pos["swap"]) / (vol / 0.001) if vol > 0 else 0.0
         rows.append({"n_rollovers": n, "swap_per_001": swap_per_001, "volume": vol})
 
-    df = pd.DataFrame(rows)
-    groups = (df.groupby("n_rollovers")["swap_per_001"]
-                .mean()
-                .sort_index()
-                .to_dict())   # {0: 0.0, 1: -12.53, 2: -22.05, …}
+    df     = pd.DataFrame(rows)
+    groups = df.groupby("n_rollovers")["swap_per_001"].mean().sort_index().to_dict()
+
+    costs = {}
+    for n in sorted(groups):
+        if n == 0:
+            continue
+        cost = groups[n] - groups.get(n - 1, 0.0)
+        if n - 1 < len(past_desc):
+            costs[past_desc[n - 1]] = cost
+    return costs
+
+
+def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
+    """Print rollover cost table, cumulative swap paid, and next-rollover projection."""
+    if positions.empty or "swap" not in positions.columns \
+            or "time_open" not in positions.columns:
+        return
+
+    now              = pd.Timestamp.now(tz="UTC")
+    all_dates        = compute_rollover_dates(2020, 2030)
+    past_rollovers   = [d for d in all_dates if d <= now]
+    rollover_costs   = compute_rollover_costs(positions)
+
+    # Rebuild grouping for the diagnostic table
+    rows = []
+    for _, pos in positions.iterrows():
+        t_open = pos["time_open"]
+        if t_open.tzinfo is None:
+            t_open = t_open.tz_localize("UTC")
+        n   = sum(1 for r in past_rollovers if r > t_open)
+        vol = float(pos["volume"])
+        swap_per_001 = float(pos["swap"]) / (vol / 0.001) if vol > 0 else 0.0
+        rows.append({"n_rollovers": n, "swap_per_001": swap_per_001, "volume": vol})
+    df     = pd.DataFrame(rows)
+    groups = df.groupby("n_rollovers")["swap_per_001"].mean().sort_index().to_dict()
 
     print(f"\n{'═'*60}")
     print(f"  ROLLOVER MODEL  ({currency})")
     print(f"  Dates: official OANDA table for 2026; 'Wed before 3rd Fri' elsewhere")
     print(f"{'═'*60}")
 
-    # ── Per-rollover cost back-calculation ────────────────────────────────────
-    rollover_costs = {}   # rollover_date → cost_per_0001_lot
-    sorted_ns = sorted(groups.keys())
-    for i, n in enumerate(sorted_ns):
-        if n == 0:
-            continue
-        prev_swap = groups.get(n - 1, 0.0)
-        cost      = groups[n] - prev_swap
-        # Rollover index: n-th most recent rollover = past_desc[n-1]
-        if n - 1 < len(past_desc):
-            rollover_costs[past_desc[n - 1]] = cost
+    # ── Total swap already paid ───────────────────────────────────────────────
+    total_swap = float(positions["swap"].sum())
+    print(f"\n  Total swap charged to open positions : {total_swap:>+,.2f} {currency}")
 
+    # ── Per-rollover cost table ───────────────────────────────────────────────
     print(f"\n  Historical rollover costs (back-calculated from open positions):")
     print(f"  {'Rollover date':<14}  {'Cost/0.001lot':>14}  {'Cost/0.01lot':>13}  "
           f"{'Cost/lot':>12}")
@@ -585,28 +624,27 @@ def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
         print(f"  {str(rdate)[:10]:<14}  {c:>+14.2f}  {c*10:>+13.2f}  "
               f"{c*1000:>+12.2f}")
 
-    # ── Summary by rollover count (diagnostic) ────────────────────────────────
+    # ── Summary by rollover count ─────────────────────────────────────────────
     print(f"\n  Positions grouped by # of rollovers survived:")
     print(f"  {'# Rollovers':>12}  {'Positions':>10}  {'Avg swap/0.001lot':>18}")
     print(f"  {'─'*12}  {'─'*10}  {'─'*18}")
-    for n in sorted_ns:
+    for n in sorted(groups):
         n_pos = int((df["n_rollovers"] == n).sum())
         print(f"  {n:>12}  {n_pos:>10}  {groups[n]:>+18.2f}")
 
     # ── Next rollover projection ──────────────────────────────────────────────
-    future = [d for d in all_rollover_dates if d > now]
+    future = [d for d in all_dates if d > now]
     if future:
-        next_r = future[0]
+        next_r    = future[0]
         days_away = (next_r - now).days
         print(f"\n  Next rollover : {str(next_r)[:10]}  ({days_away} days away)")
         if rollover_costs:
-            avg_cost = sum(rollover_costs.values()) / len(rollover_costs)
+            avg_cost  = sum(rollover_costs.values()) / len(rollover_costs)
             total_vol = df["volume"].sum()
-            proj_total = avg_cost * (total_vol / 0.001) * avg_cost / avg_cost  # simplify
-            proj_total = avg_cost * (total_vol / 0.001)
+            proj      = avg_cost * (total_vol / 0.001)
             print(f"  Avg cost/rollover/0.001lot : {avg_cost:>+.2f} {currency}")
             print(f"  Projected cost on {total_vol:.3f} lots  : "
-                  f"{proj_total:>+,.2f} {currency}  (based on avg of known rollovers)")
+                  f"{proj:>+,.2f} {currency}  (avg of {len(rollover_costs)} known rollovers)")
 
     print(f"{'═'*60}")
 
@@ -614,7 +652,8 @@ def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
 # ── Chart ──────────────────────────────────────────────────────────────────────
 
 def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
-         info, currency: str) -> plt.Figure:
+         info, currency: str,
+         rollover_dates: list = None) -> plt.Figure:
     plt.style.use("dark_background")
 
     has_ts = not ts.empty
@@ -695,6 +734,25 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
             ax1.scatter([ev_naive], [bal_at_event], marker=marker,
                         color=color, s=70, zorder=5)
 
+        # Rollover date markers — gold vertical lines across ax1 & ax2
+        if rollover_dates:
+            from matplotlib.transforms import blended_transform_factory
+            t_start_np = times[0]
+            t_end_np   = times[-1]
+            for rdate in rollover_dates:
+                r_np = np.datetime64(
+                    rdate.tz_localize(None) if rdate.tzinfo else rdate
+                )
+                if not (t_start_np <= r_np <= t_end_np):
+                    continue
+                ax1.axvline(r_np, color="#f0c040", lw=1.2, ls="--", alpha=0.8, zorder=3)
+                trans = blended_transform_factory(ax1.transData, ax1.transAxes)
+                ax1.text(r_np, 0.99,
+                         f" ↓ rollover\n   {str(rdate)[:10]}",
+                         transform=trans, color="#f0c040",
+                         fontsize=6, va="top", ha="left",
+                         bbox=dict(fc="none", ec="none"))
+
         ax1.set_ylabel(f"Amount ({currency})")
         ax1.yaxis.set_major_formatter(mticker.FuncFormatter(
             lambda x, _: f"{x:,.0f}"))
@@ -751,6 +809,13 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
                      color="#ff8080", alpha=0.40, label="Unrealised (loss)")
 
     ax2.plot(times, eq, color="#f0f0f0", lw=1.2, zorder=4, label="Equity")
+
+    if rollover_dates:
+        for rdate in rollover_dates:
+            r_np = np.datetime64(rdate.tz_localize(None) if rdate.tzinfo else rdate)
+            if times[0] <= r_np <= times[-1]:
+                ax2.axvline(r_np, color="#f0c040", lw=1.2, ls="--", alpha=0.8, zorder=3)
+
     ax2.set_ylim(bottom=0)
     ax2.set_ylabel(f"Amount ({currency})")
     ax2.set_title("Capital composition: deposited  +  realised P&L  +  unrealised P&L")
@@ -804,6 +869,7 @@ def main():
         sys.exit(1)
 
     try:
+        now       = pd.Timestamp.now(tz="UTC")
         info      = mt5.account_info()
         currency  = info.currency
         leverage  = info.leverage if info.leverage > 0 else 20
@@ -821,6 +887,8 @@ def main():
         print_snapshot(info, positions, bal_events)
         print_swap_analysis(trade_deals, currency)
         print_rollover_model(positions, currency)
+
+        rollover_costs = compute_rollover_costs(positions)
 
         # ── Save deal history to CSV for offline inspection ───────────────────
         import os
@@ -844,7 +912,8 @@ def main():
                 pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
             )
             ts = reconstruct_equity(positions, bal_events, trade_deals, open_deals,
-                                    info.margin, leverage, t_start=cutoff)
+                                    info.margin, leverage, t_start=cutoff,
+                                    rollover_costs=rollover_costs)
             if not ts.empty:
                 print(f"  {len(ts):,} bars  "
                       f"({str(ts['time'].iloc[0])[:16]} UTC → now)")
@@ -854,7 +923,9 @@ def main():
         else:
             print("\nNo open positions — showing current snapshot only.")
 
-        fig = plot(ts, bal_events, info, currency)
+        past_rollover_dates = [d for d in compute_rollover_dates() if d <= now]
+        fig = plot(ts, bal_events, info, currency,
+                   rollover_dates=past_rollover_dates)
         cache.save_chart(fig, "01a_account_history")
         plt.show()
 
