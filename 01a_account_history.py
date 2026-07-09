@@ -694,9 +694,12 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
                 "realised":       "last",
                 "upnl":           "last",
                 "swap_upnl":      "last",
-                "margin_used":    "last",
-                "free_margin":    "last",
-                "margin_level":   "last",
+                # Margin uses mean over the hour — smooths out intrabar noise
+                # while keeping the value accurate as an hourly average.
+                # Equity uses last (anchored to actual close).
+                "margin_used":    "mean",
+                "free_margin":    "mean",
+                "margin_level":   "mean",
             })
             .dropna()
             .reset_index()
