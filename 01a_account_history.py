@@ -245,14 +245,19 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     total_swap_upnl = np.zeros(n)   # swap portion only — for no-swap equity line
     total_margin    = np.zeros(n)
 
-    # margin_scale: converts the raw formula (price × vol × cs / leverage) to the
-    # actual account-currency margin.  Uses entry price so that the same scale
-    # applies consistently to both current and historical upnl/margin values.
+    # margin_scale: converts price × vol × cs / leverage (USD) → account currency (PLN).
+    # Calibrated using the CURRENT close price (≈ current market price) so that the
+    # scale factor represents the effective USD/PLN rate rather than an entry-price artefact.
+    # Historical margin then floats correctly with market price, matching how OANDA
+    # calculates margin requirements on the current price at each point in time.
     formula_margin_now = 0.0
     for _, pos in positions.iterrows():
         si = mt5.symbol_info(pos["symbol"])
         contract_size = si.trade_contract_size if si else 50.0
-        formula_margin_now += pos["price_open"] * pos["volume"] * contract_size / leverage
+        sym = pos["symbol"]
+        last_close = (float(symbol_data[sym]["close"].iloc[-1])
+                      if sym in symbol_data else float(pos["price_open"]))
+        formula_margin_now += last_close * pos["volume"] * contract_size / leverage
     margin_scale = (margin_used / formula_margin_now) if formula_margin_now > 0 else 1.0
 
     for _, pos in positions.iterrows():
@@ -317,9 +322,10 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 total_upnl      += flat
                 total_swap_upnl += flat
 
-        # Margin steps up when position opens; scaled to account currency
-        pos_margin = pos["price_open"] * pos["volume"] * contract_size / leverage * margin_scale
-        total_margin += np.where(active, pos_margin, 0.0)
+        # Margin floats per bar with the close price — matches OANDA's current-price
+        # margin requirement.  When market dips, required margin falls too.
+        pos_margin_arr = closes * pos["volume"] * contract_size / leverage * margin_scale
+        total_margin += np.where(active, pos_margin_arr, 0.0)
 
     # ── Historical (closed) positions — margin + P&L reconstruction ─────────
     # For each closed position we reconstruct BOTH margin and unrealised P&L
@@ -353,14 +359,21 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             sym = od["symbol"]
             si  = mt5.symbol_info(sym)
             contract_size = si.trade_contract_size if si else 50.0
-            hist_margin   = (od["price_open"] * od["volume"] * contract_size
-                             / leverage * margin_scale)
 
             master_times = symbol_data[list(symbol_data.keys())[0]]["time"].values
             window = ((master_times >= np.datetime64(t_open)) &
                       (master_times <  np.datetime64(t_close)))
 
-            total_margin += np.where(window, hist_margin, 0.0)
+            # Per-bar margin using close price (not fixed entry price)
+            if sym in symbol_data:
+                sym_closes_all = symbol_data[sym]["close"].values
+                hist_margin_arr = (sym_closes_all * od["volume"] * contract_size
+                                   / leverage * margin_scale)
+                total_margin += np.where(window, hist_margin_arr, 0.0)
+            else:
+                hist_margin = (od["price_open"] * od["volume"] * contract_size
+                               / leverage * margin_scale)
+                total_margin += np.where(window, hist_margin, 0.0)
 
             # Option C: anchor historical upnl to actual net PLN from deal history.
             # net_pln = sum of all close-deal P&L for this position (already PLN).
