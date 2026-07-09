@@ -404,12 +404,79 @@ def print_snapshot(info, positions: pd.DataFrame, bal_events: pd.DataFrame):
             print(f"  {str(ev['time'])[:22]}  {ev['amount']:>12,.2f}  {typename:<20}  {comment}")
     if not positions.empty:
         print(f"\n  Open positions : {len(positions)}")
+        print(f"  {'Dir':<4}  {'Vol':>6}  {'Symbol':<12}  {'Entry':>10}  "
+              f"{'P&L':>10}  {'Swap':>10}  {'Net':>10}")
+        print(f"  {'─'*4}  {'─'*6}  {'─'*12}  {'─'*10}  "
+              f"{'─'*10}  {'─'*10}  {'─'*10}")
         for _, p in positions.iterrows():
-            direction = "BUY " if p["type"] == 0 else "SELL"
-            print(f"    {direction}  {p['volume']} lot  {p['symbol']}  "
-                  f"@ {p['price_open']}  P&L {p['profit']:+.2f}")
+            direction = "BUY" if p["type"] == 0 else "SELL"
+            swap = float(p.get("swap", 0.0))
+            net  = float(p["profit"]) + swap
+            print(f"  {direction:<4}  {p['volume']:>6}  {p['symbol']:<12}  "
+                  f"{p['price_open']:>10.2f}  {p['profit']:>+10.2f}  "
+                  f"{swap:>+10.2f}  {net:>+10.2f}")
     else:
         print(f"\n  No open positions.")
+    print(f"{'═'*55}")
+
+
+def print_swap_analysis(trade_deals: pd.DataFrame, currency: str = "PLN"):
+    """Print a breakdown of swap charges from closed trade history."""
+    if trade_deals.empty or "swap" not in trade_deals.columns:
+        return
+    total_swap = trade_deals["swap"].sum()
+    nonzero = trade_deals[trade_deals["swap"] != 0].copy()
+    print(f"\n{'═'*55}")
+    print(f"  SWAP / ROLLOVER ANALYSIS  ({currency})")
+    print(f"{'═'*55}")
+    print(f"  Total swap charged (all closed trades) : {total_swap:>+10,.2f}")
+    print(f"  Trades with non-zero swap              : {len(nonzero):>10}  "
+          f"/ {len(trade_deals)} total")
+    if nonzero.empty:
+        print("  No swap charges found in closed trade history.")
+        print(f"{'═'*55}")
+        return
+
+    # Monthly breakdown
+    nonzero["month"] = nonzero["time"].dt.to_period("M")
+    monthly = nonzero.groupby("month")["swap"].agg(["sum", "count"]).reset_index()
+    monthly.columns = ["month", "swap_sum", "n_trades"]
+    print(f"\n  Monthly swap breakdown:")
+    print(f"  {'Month':<10}  {'Trades':>8}  {'Swap sum':>12}  {'Avg/trade':>12}")
+    print(f"  {'─'*10}  {'─'*8}  {'─'*12}  {'─'*12}")
+    for _, row in monthly.iterrows():
+        avg = row["swap_sum"] / row["n_trades"]
+        print(f"  {str(row['month']):<10}  {int(row['n_trades']):>8}  "
+              f"{row['swap_sum']:>+12,.2f}  {avg:>+12,.2f}")
+
+    # Individual trades around March 15 and June 15 (±7 days)
+    rollover_windows = [
+        ("Mar rollover", 3, 15),
+        ("Jun rollover", 6, 15),
+        ("Sep rollover", 9, 15),
+        ("Dec rollover", 12, 15),
+    ]
+    print(f"\n  Trades near quarterly rollover dates (±7 days):")
+    print(f"  {'Date':>22}  {'Symbol':<12}  {'Vol':>6}  "
+          f"{'Profit':>10}  {'Swap':>10}  {'Net':>10}")
+    print(f"  {'─'*22}  {'─'*12}  {'─'*6}  "
+          f"{'─'*10}  {'─'*10}  {'─'*10}")
+    found_any = False
+    for label, month, day in rollover_windows:
+        mask = (
+            (nonzero["time"].dt.month == month) &
+            (nonzero["time"].dt.day.between(day - 7, day + 7))
+        )
+        subset = nonzero[mask]
+        if not subset.empty:
+            print(f"  ── {label} ──")
+            found_any = True
+            for _, r in subset.iterrows():
+                sym = str(r.get("symbol", ""))
+                print(f"  {str(r['time'])[:22]}  {sym:<12}  {r['volume']:>6}  "
+                      f"{r['profit']:>+10.2f}  {r['swap']:>+10.2f}  {r['net']:>+10.2f}")
+    if not found_any:
+        print("  None found near rollover windows.")
     print(f"{'═'*55}")
 
 
@@ -621,6 +688,7 @@ def main():
         positions = get_open_positions()
 
         print_snapshot(info, positions, bal_events)
+        print_swap_analysis(trade_deals, currency)
 
         # ── Save deal history to CSV for offline inspection ───────────────────
         import os
