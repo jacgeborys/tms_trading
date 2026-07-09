@@ -885,22 +885,24 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
     return fig
 
 
-def print_margin_diagnostic(ts: pd.DataFrame, date_str: str = "2026-03",
-                            window_days: int = 5):
+def print_margin_diagnostic(ts: pd.DataFrame, date_str: str = "2026-03"):
     """
     Print daily min/max equity, margin used and margin level for a date window.
     Useful for verifying the reconstruction against known account events.
     """
     if ts.empty:
         return
-    mask = ts["time"].astype(str).str.startswith(date_str)
+    # ts["time"] is tz-naive numpy datetime64 — convert to Period for filtering
+    times_ser = pd.to_datetime(ts["time"])
+    mask = times_ser.dt.to_period("M").astype(str) == date_str
     subset = ts[mask].copy()
     if subset.empty:
         print(f"  No reconstructed data found for '{date_str}'")
         return
 
     # Downsample to daily summary
-    subset["date"] = subset["time"].astype("datetime64[D]")
+    subset = subset.copy()
+    subset["date"] = pd.to_datetime(subset["time"]).dt.floor("D")
     daily = subset.groupby("date").agg(
         equity_min=("equity",       "min"),
         equity_max=("equity",       "max"),
