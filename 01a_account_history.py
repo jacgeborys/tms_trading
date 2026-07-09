@@ -41,23 +41,72 @@ EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
 # ── Data fetching ──────────────────────────────────────────────────────────────
 
+DEAL_TYPE_NAMES = {
+    0:  "BUY",
+    1:  "SELL",
+    2:  "BALANCE",
+    3:  "CREDIT",
+    4:  "CHARGE",
+    5:  "CORRECTION",
+    6:  "BONUS",
+    7:  "COMMISSION",
+    8:  "COMMISSION_DAILY",
+    9:  "COMMISSION_MONTHLY",
+    10: "COMMISSION_AGENT_DAILY",
+    11: "COMMISSION_AGENT_MONTHLY",
+    12: "INTEREST",
+    13: "BUY_CANCELED",
+    14: "SELL_CANCELED",
+    15: "DIVIDEND",
+    16: "DIVIDEND_FRANKED",
+    17: "TAX",
+}
+
+DEAL_ENTRY_NAMES = {0: "IN", 1: "OUT", 2: "INOUT", 3: "OUT_BY"}
+
+
 def fetch_deal_history():
     """
     Fetch all account deals and split into two DataFrames:
-      bal_events  — deposits / withdrawals  (DEAL_TYPE_BALANCE)
-      trade_deals — closed positions        (DEAL_ENTRY_OUT / DEAL_ENTRY_INOUT)
+      bal_events  — deposits / withdrawals / adjustments (non-trade deal types)
+      trade_deals — closed positions (DEAL_ENTRY_OUT / DEAL_ENTRY_INOUT)
+
+    Also returns:
+      open_deals  — position-open legs (DEAL_ENTRY_IN)
+      all_deals   — every raw deal as a flat DataFrame for auditing
     """
     now = datetime.now(tz=timezone.utc)
     raw = mt5.history_deals_get(EPOCH, now)
     if raw is None or not len(raw):
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    bal_rows, trade_rows, open_rows = [], [], []
+    bal_rows, trade_rows, open_rows, all_rows = [], [], [], []
     for d in raw:
         t = pd.Timestamp(d.time, unit="s", tz="UTC")
-        if d.type == DEAL_TYPE_BALANCE:
-            bal_rows.append({"time": t, "amount": d.profit, "comment": d.comment})
-        elif d.entry in (1, 2):   # DEAL_ENTRY_OUT, DEAL_ENTRY_INOUT — closed trade
+        all_rows.append({
+            "time":        t,
+            "ticket":      d.ticket,
+            "order":       d.order,
+            "position_id": d.position_id,
+            "type":        d.type,
+            "type_name":   DEAL_TYPE_NAMES.get(d.type, f"UNKNOWN({d.type})"),
+            "entry":       d.entry,
+            "entry_name":  DEAL_ENTRY_NAMES.get(d.entry, f"?({d.entry})"),
+            "symbol":      d.symbol,
+            "volume":      d.volume,
+            "price":       d.price,
+            "profit":      d.profit,
+            "commission":  d.commission,
+            "swap":        d.swap,
+            "fee":         d.fee,
+            "comment":     d.comment,
+        })
+        if d.type != 0 and d.type != 1:   # non-trade deal type → balance/adjustment event
+            bal_rows.append({"time": t, "amount": d.profit,
+                             "type": d.type,
+                             "type_name": DEAL_TYPE_NAMES.get(d.type, f"UNKNOWN({d.type})"),
+                             "comment": d.comment})
+        elif d.entry in (1, 2):            # DEAL_ENTRY_OUT / INOUT — closed trade
             trade_rows.append({
                 "time":        t,
                 "position_id": d.position_id,
@@ -69,7 +118,7 @@ def fetch_deal_history():
                 "fee":         d.fee,
                 "net":         d.profit + d.commission + d.swap + d.fee,
             })
-        elif d.entry == 0:        # DEAL_ENTRY_IN — position opened
+        elif d.entry == 0:                 # DEAL_ENTRY_IN — position opened
             open_rows.append({
                 "time":        t,
                 "position_id": d.position_id,
@@ -84,7 +133,7 @@ def fetch_deal_history():
             return pd.DataFrame()
         return pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
 
-    return _df(bal_rows), _df(trade_rows), _df(open_rows)
+    return _df(bal_rows), _df(trade_rows), _df(open_rows), _df(all_rows)
 
 
 def get_open_positions() -> pd.DataFrame:
@@ -346,15 +395,13 @@ def print_snapshot(info, positions: pd.DataFrame, bal_events: pd.DataFrame):
         print(f"  Total deposits : {total_dep:>12,.2f}  ({(bal_events['amount'] > 0).sum()} events)")
         if total_wdr:
             print(f"  Withdrawals    : {total_wdr:>12,.2f}  ({(bal_events['amount'] < 0).sum()} events)")
-        print(f"\n  All balance events ({len(bal_events)} total):")
-        print(f"  {'Date':>22}  {'Amount':>12}  Comment")
-        print(f"  {'─'*22}  {'─'*12}  {'─'*40}")
-        rollover_keywords = ("rollover", "dividend", "adjust", "correction", "swap")
+        print(f"\n  All non-trade events ({len(bal_events)} total):")
+        print(f"  {'Date':>22}  {'Amount':>12}  {'Type':<20}  Comment")
+        print(f"  {'─'*22}  {'─'*12}  {'─'*20}  {'─'*40}")
         for _, ev in bal_events.iterrows():
-            comment = str(ev.get("comment", "")) or ""
-            flag = "  ← possible rollover/adjustment" \
-                   if any(k in comment.lower() for k in rollover_keywords) else ""
-            print(f"  {str(ev['time'])[:22]}  {ev['amount']:>12,.2f}  {comment}{flag}")
+            comment  = str(ev.get("comment", "")) or ""
+            typename = str(ev.get("type_name", ""))
+            print(f"  {str(ev['time'])[:22]}  {ev['amount']:>12,.2f}  {typename:<20}  {comment}")
     if not positions.empty:
         print(f"\n  Open positions : {len(positions)}")
         for _, p in positions.iterrows():
@@ -564,10 +611,11 @@ def main():
         leverage  = info.leverage if info.leverage > 0 else 20
 
         print("Fetching deal history...")
-        bal_events, trade_deals, open_deals = fetch_deal_history()
-        print(f"  {len(bal_events)} deposit/withdrawal event(s)")
+        bal_events, trade_deals, open_deals, all_deals = fetch_deal_history()
+        print(f"  {len(bal_events)} non-trade event(s)  (balance / adjustment / dividend / ...)")
         print(f"  {len(trade_deals)} closed trade deal(s)")
         print(f"  {len(open_deals)} position-open deal(s)")
+        print(f"  {len(all_deals)} total raw deals in history")
 
         print("Fetching open positions...")
         positions = get_open_positions()
@@ -577,14 +625,16 @@ def main():
         # ── Save deal history to CSV for offline inspection ───────────────────
         import os
         os.makedirs("results", exist_ok=True)
+        if not all_deals.empty:
+            all_deals.to_csv("results/01a_all_deals.csv", index=False)
+            print(f"\n  Saved {len(all_deals)} raw deals      → results/01a_all_deals.csv")
         if not bal_events.empty:
             bal_events.to_csv("results/01a_balance_events.csv", index=False)
-            print(f"\n  Saved {len(bal_events)} balance events → results/01a_balance_events.csv")
+            print(f"  Saved {len(bal_events)} non-trade events → results/01a_balance_events.csv")
         if not trade_deals.empty:
-            # Save swap summary: only rows where swap != 0, plus surrounding context
             swap_nonzero = trade_deals[trade_deals["swap"] != 0]
             trade_deals.to_csv("results/01a_trade_deals.csv", index=False)
-            print(f"  Saved {len(trade_deals)} trade deals  → results/01a_trade_deals.csv"
+            print(f"  Saved {len(trade_deals)} trade deals     → results/01a_trade_deals.csv"
                   f"  ({len(swap_nonzero)} have non-zero swap)")
 
         ts = pd.DataFrame()
