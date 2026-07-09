@@ -241,8 +241,9 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     balance   = deposited + realised
 
     # ── Per-bar unrealised P&L and margin ────────────────────────────────────
-    total_upnl   = np.zeros(n)
-    total_margin = np.zeros(n)
+    total_upnl      = np.zeros(n)
+    total_swap_upnl = np.zeros(n)   # swap portion only — for no-swap equity line
+    total_margin    = np.zeros(n)
 
     # margin_scale: converts the raw formula (price × vol × cs / leverage) to the
     # actual account-currency margin.  Uses entry price so that the same scale
@@ -304,12 +305,17 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 model_total = sum(c * (vol / 0.001) for _, c in applicable)
                 scale       = swap_pln / model_total if abs(model_total) > 1e-6 else 1.0
                 for rdate, cost_per_001 in applicable:
-                    r_naive  = np.datetime64(rdate.tz_localize(None))
+                    # tz_convert(None): convert UTC→naive UTC (safe for tz-aware Timestamps)
+                    r_naive  = np.datetime64(rdate.tz_convert(None))
                     cost_pln = cost_per_001 * (vol / 0.001) * scale
-                    total_upnl += np.where(bar_times >= r_naive, cost_pln, 0.0)
+                    step     = np.where(bar_times >= r_naive, cost_pln, 0.0)
+                    total_upnl      += step
+                    total_swap_upnl += step
             else:
                 # No rollover cost data — fall back to flat offset
-                total_upnl += np.where(active, swap_pln, 0.0)
+                flat = np.where(active, swap_pln, 0.0)
+                total_upnl      += flat
+                total_swap_upnl += flat
 
         # Margin steps up when position opens; scaled to account currency
         pos_margin = pos["price_open"] * pos["volume"] * contract_size / leverage * margin_scale
@@ -384,10 +390,12 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     return pd.DataFrame({
         "time":         times,
         "equity":       equity,
+        "equity_no_swap": balance + total_upnl - total_swap_upnl,
         "balance":      balance,        # deposited + realised
         "deposited":    deposited,      # cash in only
         "realised":     realised,       # cumulative closed-trade P&L
         "upnl":         total_upnl,
+        "swap_upnl":    total_swap_upnl,
         "margin_used":  total_margin,
         "free_margin":  free_margin,
         "margin_level": margin_level,
@@ -664,14 +672,16 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
             ts.set_index("time")
             .resample("1H")
             .agg({
-                "equity":       "last",
-                "balance":      "last",
-                "deposited":    "last",
-                "realised":     "last",
-                "upnl":         "last",
-                "margin_used":  "last",
-                "free_margin":  "last",
-                "margin_level": "last",
+                "equity":         "last",
+                "equity_no_swap": "last",
+                "balance":        "last",
+                "deposited":      "last",
+                "realised":       "last",
+                "upnl":           "last",
+                "swap_upnl":      "last",
+                "margin_used":    "last",
+                "free_margin":    "last",
+                "margin_level":   "last",
             })
             .dropna()
             .reset_index()
@@ -715,6 +725,11 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
         # Equity line
         ax1.plot(times, equity, color="#f0f0f0", lw=1.6, label="Equity", zorder=4)
 
+        # Equity without swap — shows what equity would be if no rollover costs
+        equity_ns = ts_plot["equity_no_swap"].values
+        ax1.plot(times, equity_ns, color="#f0f0f0", lw=1.0, ls=":",
+                 alpha=0.5, label="Equity (no swap)", zorder=3)
+
         # Balance — step function (rises on deposits, flat otherwise)
         ax1.step(times, ts_plot["balance"].values, where="post",
                  color="#aaaaaa", lw=1.2, ls="--",
@@ -741,7 +756,7 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
             t_end_np   = times[-1]
             for rdate in rollover_dates:
                 r_np = np.datetime64(
-                    rdate.tz_localize(None) if rdate.tzinfo else rdate
+                    rdate.tz_convert(None) if rdate.tzinfo else rdate
                 )
                 if not (t_start_np <= r_np <= t_end_np):
                     continue
@@ -812,7 +827,7 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
 
     if rollover_dates:
         for rdate in rollover_dates:
-            r_np = np.datetime64(rdate.tz_localize(None) if rdate.tzinfo else rdate)
+            r_np = np.datetime64(rdate.tz_convert(None) if rdate.tzinfo else rdate)
             if times[0] <= r_np <= times[-1]:
                 ax2.axvline(r_np, color="#f0c040", lw=1.2, ls="--", alpha=0.8, zorder=3)
 
