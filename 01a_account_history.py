@@ -346,6 +346,15 @@ def print_snapshot(info, positions: pd.DataFrame, bal_events: pd.DataFrame):
         print(f"  Total deposits : {total_dep:>12,.2f}  ({(bal_events['amount'] > 0).sum()} events)")
         if total_wdr:
             print(f"  Withdrawals    : {total_wdr:>12,.2f}  ({(bal_events['amount'] < 0).sum()} events)")
+        print(f"\n  All balance events ({len(bal_events)} total):")
+        print(f"  {'Date':>22}  {'Amount':>12}  Comment")
+        print(f"  {'─'*22}  {'─'*12}  {'─'*40}")
+        rollover_keywords = ("rollover", "dividend", "adjust", "correction", "swap")
+        for _, ev in bal_events.iterrows():
+            comment = str(ev.get("comment", "")) or ""
+            flag = "  ← possible rollover/adjustment" \
+                   if any(k in comment.lower() for k in rollover_keywords) else ""
+            print(f"  {str(ev['time'])[:22]}  {ev['amount']:>12,.2f}  {comment}{flag}")
     if not positions.empty:
         print(f"\n  Open positions : {len(positions)}")
         for _, p in positions.iterrows():
@@ -564,6 +573,19 @@ def main():
         positions = get_open_positions()
 
         print_snapshot(info, positions, bal_events)
+
+        # ── Save deal history to CSV for offline inspection ───────────────────
+        import os
+        os.makedirs("results", exist_ok=True)
+        if not bal_events.empty:
+            bal_events.to_csv("results/01a_balance_events.csv", index=False)
+            print(f"\n  Saved {len(bal_events)} balance events → results/01a_balance_events.csv")
+        if not trade_deals.empty:
+            # Save swap summary: only rows where swap != 0, plus surrounding context
+            swap_nonzero = trade_deals[trade_deals["swap"] != 0]
+            trade_deals.to_csv("results/01a_trade_deals.csv", index=False)
+            print(f"  Saved {len(trade_deals)} trade deals  → results/01a_trade_deals.csv"
+                  f"  ({len(swap_nonzero)} have non-zero swap)")
 
         ts = pd.DataFrame()
         if not positions.empty:
