@@ -674,7 +674,9 @@ def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
 
 def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
          info, currency: str,
-         rollover_dates: list = None) -> plt.Figure:
+         rollover_dates: list = None,
+         margin_call_pct: float = 100.0,
+         margin_so_pct: float = 50.0) -> plt.Figure:
     plt.style.use("dark_background")
 
     has_ts = not ts.empty
@@ -864,9 +866,11 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
         ax3.plot(times_ml, ml, color="#f0c040", lw=1.2, label="Margin level")
         ax3.fill_between(times_ml, ml, 0, color="#f0c040", alpha=0.12)
 
-    ax3.axhline(100, color="#ef5350", lw=1.0, ls="--", label="Stop out  (100%)")
-    ax3.axhline(200, color="#f08040", lw=0.8, ls=":",  label="Warning   (200%)")
-    ax3.axhspan(0, 100, color="#ef5350", alpha=0.08)
+    ax3.axhline(margin_so_pct,   color="#ef5350", lw=1.2, ls="--",
+                label=f"Stop-out  ({margin_so_pct:.0f}%)")
+    ax3.axhline(margin_call_pct, color="#f08040", lw=0.9, ls=":",
+                label=f"Margin call ({margin_call_pct:.0f}%)")
+    ax3.axhspan(0, margin_so_pct, color="#ef5350", alpha=0.10)
     cur_ml = float(info.margin_level)
     ax3.axhline(cur_ml, color="#ffffff", lw=0.7, ls="--", alpha=0.4,
                 label=f"Current  ({cur_ml:.0f}%)")
@@ -879,6 +883,46 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
 
     plt.tight_layout()
     return fig
+
+
+def print_margin_diagnostic(ts: pd.DataFrame, date_str: str = "2026-03",
+                            window_days: int = 5):
+    """
+    Print daily min/max equity, margin used and margin level for a date window.
+    Useful for verifying the reconstruction against known account events.
+    """
+    if ts.empty:
+        return
+    mask = ts["time"].astype(str).str.startswith(date_str)
+    subset = ts[mask].copy()
+    if subset.empty:
+        print(f"  No reconstructed data found for '{date_str}'")
+        return
+
+    # Downsample to daily summary
+    subset["date"] = subset["time"].astype("datetime64[D]")
+    daily = subset.groupby("date").agg(
+        equity_min=("equity",       "min"),
+        equity_max=("equity",       "max"),
+        margin_min=("margin_used",  "min"),
+        margin_max=("margin_used",  "max"),
+        ml_min    =("margin_level", "min"),
+        ml_max    =("margin_level", "max"),
+    ).reset_index()
+
+    print(f"\n{'═'*70}")
+    print(f"  MARGIN DIAGNOSTIC — {date_str}")
+    print(f"{'═'*70}")
+    print(f"  {'Date':<12}  {'Equity min':>12}  {'Equity max':>12}  "
+          f"{'Margin min':>11}  {'ML min %':>10}  {'ML max %':>10}")
+    print(f"  {'─'*12}  {'─'*12}  {'─'*12}  {'─'*11}  {'─'*10}  {'─'*10}")
+    for _, r in daily.iterrows():
+        ml_min = r["ml_min"] if r["ml_min"] != np.inf else 9999
+        ml_min = min(ml_min, 9999)
+        print(f"  {str(r['date'])[:10]:<12}  {r['equity_min']:>12,.0f}  "
+              f"{r['equity_max']:>12,.0f}  {r['margin_min']:>11,.0f}  "
+              f"{ml_min:>10.1f}  {min(r['ml_max'], 9999):>10.1f}")
+    print(f"{'═'*70}")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -951,9 +995,20 @@ def main():
         else:
             print("\nNo open positions — showing current snapshot only.")
 
+        # Fetch actual broker stop-out thresholds from MT5 account info
+        margin_so_pct   = float(getattr(info, "margin_so_so",   50.0))
+        margin_call_pct = float(getattr(info, "margin_so_call", 100.0))
+        print(f"\n  Broker thresholds: margin call {margin_call_pct:.0f}%  "
+              f"/ stop-out {margin_so_pct:.0f}%")
+
+        if not ts.empty:
+            print_margin_diagnostic(ts, "2026-03")
+
         past_rollover_dates = [d for d in compute_rollover_dates() if d <= now]
         fig = plot(ts, bal_events, info, currency,
-                   rollover_dates=past_rollover_dates)
+                   rollover_dates=past_rollover_dates,
+                   margin_call_pct=margin_call_pct,
+                   margin_so_pct=margin_so_pct)
         cache.save_chart(fig, "01a_account_history")
         plt.show()
 
