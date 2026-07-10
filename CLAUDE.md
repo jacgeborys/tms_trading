@@ -2,7 +2,7 @@
 
 ## What this project is
 
-Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 connected to OANDA demo account** (account 62611585, server OANDATMS-MT5). Written in Python 3.8. The bot is currently in research/backtesting phase — no live order execution yet.
+Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 connected to OANDA demo account** (account 62611585, server OANDATMS-MT5). Written in Python 3.8. **Current phase: buy-and-hold accumulation with ladder pending orders.** Power-hour research phase concluded (WR 56.4%, below 58.2% break-even) — archived.
 
 ---
 
@@ -32,172 +32,60 @@ The user trades exclusively US500 with frequent small operations (scalping / int
 tms/
 ├── CLAUDE.md                   ← this file
 │
-├── ── RUNNABLE SCRIPTS (numbered in execution order) ──────────────────
-├── 01_fetch_data.py            fetch M5/H1 data for US500 + correlated instruments
-├── 02_account.py               live account snapshot (balance, equity, open positions)
-├── 03_time_analysis.py         win-rate by UTC hour + day-of-week statistics
-├── 04_build_features.py        build 80-feature matrix → 04_features_full.csv
-├── 05_strategy_search.py       RF-ranked condition search → 05_strategy_table.csv
-├── 06_backtest.py              run power_hour / baseline strategy backtests
-├── 07_trade_charts.py          candle chart for every individual trade (entry + exit)
-├── 08_export_csv.py            power-hour bars CSV + candlestick overview chart
-├── 09_explore_chart.py         interactive multi-indicator chart (requires MT5)
+├── ── ACTIVE SCRIPTS ──────────────────────────────────────────────────
+├── 01_fetch_data.py            fetch M5/H1 OHLCV for US500 + correlated instruments
+├── 01a_account_history.py      equity curve, rollover model, margin chart (main daily script)
+├── 01b_positions_chart.py      live position map + what-if equity at price drop scenarios
+├── 01c_ladder_calc.py          ladder safety calculator: ML% at each rung trigger depth
 │
-├── ── LIBRARY MODULES (no prefix; imported by scripts) ────────────────
+├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   symbol, leverage, magic number constants
 ├── mt5_client.py               connect() / disconnect() wrappers
 ├── data.py                     get_candles(), get_candles_range(), get_tick()
-├── account.py                  snapshot(), open_positions(), bot_positions()
-├── indicators.py               all indicator functions + add_all()
-├── labeler.py                  make_long_labels() / make_short_labels() (vectorised)
-├── backtest.py                 simulate(), metrics(), print_metrics(), SPREAD_PTS=0.7
-├── baseline.py                 rule-based strategy signals + run() + plot_equity()
-├── power_hour.py               power-hour strategy (3 entry modes: market/stop/limit)
-├── model.py                    XGBoost walk-forward training (AUC ≈ 0.50 — dead end)
-├── heatmap_search.py           compute_grid(), best_params(), plot_grid()
-├── cache.py                    disk I/O: load/save OHLCV, features, models, charts
-├── features.py                 original 18-feature ML matrix (superseded by 04)
-├── pipeline.py                 old orchestrator for steps 1–7
 │
-├── data/                       cached OHLCV (auto-managed by cache.py, refreshes if >12h old)
-│   ├── US500_pro_M5.pkl        raw OHLCV: time, open, high, low, close, volume
+├── data/
+│   ├── US500_pro_M5.pkl        raw OHLCV (auto-refreshes if >12h old)
 │   ├── US100_pro_M5.pkl
 │   ├── US30_pro_M5.pkl
-│   └── GOLD_pro_M5.pkl
+│   ├── GOLD_pro_M5.pkl
+│   └── rollover_ledger.csv     persistent per-rollover cost history (written by 01a)
 │
-├── models/
-│   └── xgb_final.pkl           XGBoost (AUC 0.50 — not useful)
-│
-└── results/
-    ├── 03_time_analysis.json   hourly/DOW win rate stats
-    ├── 04_features_full.csv    all bars × 96 cols (primary feature dataset)
-    ├── 04_features_preview.csv first 500 rows for quick inspection
-    ├── 05_strategy_table.csv   RF importance + single/pair condition win rates
-    ├── 06_baseline_trades.csv  baseline strategy trade log
-    ├── 06_baseline_metrics.json
-    ├── 08_power_hour_bars.csv  power-hour window bars with all signal flags
-    └── charts/
-        ├── 03_time_analysis.png
-        ├── 04_feature_correlations.png
-        ├── 05_strategy_importance.png
-        ├── 06_power_hour_comparison.png
-        ├── 07_trade_charts_*.png    (one PNG per 16-trade page)
-        ├── 08_power_hour_signals.png
-        └── ...
+└── archive/                    ── POWER-HOUR RESEARCH PHASE (concluded, WR < break-even) ──
+    ├── 02_account.py           (superseded by 01a)
+    ├── 03_time_analysis.py     (key finding: 22 UTC WR 56.4% — archived)
+    ├── 04_build_features.py
+    ├── 05_strategy_search.py
+    ├── 06_backtest.py
+    ├── 07_trade_charts.py
+    ├── 08_export_csv.py
+    ├── 09_explore_chart.py
+    ├── account.py / backtest.py / baseline.py / cache.py
+    ├── features.py / heatmap_search.py / indicators.py / labeler.py
+    └── model.py / pipeline.py / power_hour.py / strategy.py
 ```
 
-**Cache note:** Raw OHLCV pickles auto-refresh if >12h old. Indicators are recomputed via `add_all()` each run (~2s, not cached). Feature matrix (04_features_full.csv) is regenerated by running `04_build_features.py`.
+---
+
+## Research phase summary (archived in archive/)
+
+- **XGBoost / ML**: AUC ≈ 0.50 — dead end. No bar-level signal in 8 months of M5 data.
+- **Power-hour (22 UTC)**: Long WR 56.4%, but break-even needs 58.2% (spread = 0.7 pts). Gap −1.8pp. Not tradeable profitably without a secondary filter that hasn't been found yet.
+- All research code moved to `archive/`. Strategy pivoted to buy-and-hold accumulation.
 
 ---
 
-## Indicators (indicators.py → add_all)
+## Current strategy — buy-and-hold accumulation with ladder
 
-| Column | Description |
-|---|---|
-| `ema_9/21/50/200` | Exponential moving averages |
-| `atr_14` | Wilder ATR (14-period) — vol-normalisation basis everywhere |
-| `rsi_14` | Wilder RSI |
-| `bb_mid/upper/lower/pct` | Bollinger Bands (20, 2σ). `bb_pct`: 0=lower band, 1=upper |
-| `vwap` | Intraday VWAP, resets each UTC calendar day |
-| `macd/macd_signal/macd_hist` | MACD (12, 26, 9) |
-| `rvol_20/rvol_60` | Annualised realised vol (20-bar ≈1.5h, 60-bar ≈5h) |
+Holding a large long position in US500.pro built up via buy-limit ladder orders. Not actively scalping. Daily workflow:
 
----
+1. `python 01_fetch_data.py` — refresh OHLCV if >12h old
+2. `python 01a_account_history.py` — equity curve, rollover costs, margin level chart
+3. `python 01b_positions_chart.py` — check current position map + what-if scenarios
+4. `python 01c_ladder_calc.py` — verify ladder spacing leaves safe ML%
 
-## Feature matrix (04_build_features.py → 04_features_full.csv)
+**Next rollover: September 16, 2026** — close all positions ~30 min before, reopen with one market order. Saves ~42× vs paying the rollover (~11 PLN/0.001 lot vs ~0.26 PLN spread).
 
-**83 engineered features** across 17 categories. All normalised — no raw prices.
-
-| # | Category | Key features |
-|---|---|---|
-| 1 | Multi-TF returns | `ret_5m … ret_6h` (ATR-normalised price change over 5m/15m/30m/1h/2h/4h/6h) |
-| 2 | EMA position | `dist_ema9/21/50/200_atr` (ATR-normalised distance from each EMA) |
-| 3 | EMA slopes | `slope_ema9/21/50/200` (how fast each average is rising/falling) |
-| 4 | EMA alignment | `ema9_vs_21`, `ema21_vs_50`, `ema_alignment` (−3 to +3 bull/bear score) |
-| 5 | MACD dynamics | `macd_hist`, `macd_slope`, `macd_accel`, `macd_5bar`, `bars_since_macd_bull/bear`, `macd_div_bull/bear` |
-| 6 | RSI dynamics | `rsi_norm`, `rsi_dist_50`, `rsi_slope_3/6bar`, `bars_since_oversold/overbought`, `rsi_div_bull/bear` |
-| 7 | Bollinger Bands | `bb_pct`, `bb_width_atr`, `bb_squeeze`, `bb_width_trend`, `bb_walk_up/down` |
-| 8 | VWAP | `dist_vwap_atr`, `vwap_slope` |
-| 9 | Volatility | `atr_pct`, `atr_vs_median`, `rvol_ratio`, `bar_range_atr` |
-| 10 | Bar structure | `body_pct`, `upper/lower_wick_pct`, `bar_direction`, `bar_body_atr`, `consec_green/red`, `trend_consist_1h/30m` |
-| 11 | Swing distance | `dist_hi20_atr`, `dist_lo20_atr`, `pos_in_range20` |
-| 12 | Session context | `dist_sess_hi/lo_atr`, `pos_in_sess_range`, `sess_range_atr`, `above/below_opening_range` |
-| 13 | Previous day | `gap_atr`, `above_prev_close`, `dist_prev_high/low`, `prev_day_return`, `prev_day_range_atr` |
-| 14 | Volume | `rel_volume`, `vol_trend` |
-| 15 | Round numbers | `dist_round50_atr`, `dist_round100_atr` |
-| 16 | Opening range | `above_opening_range`, `below_opening_range` (30-min ORB) |
-| 17 | Time | `hour_sin/cos`, `minute_sin/cos`, `day_of_week`, `is_power_hour`, `is_us_open`, `is_us_session` |
-
----
-
-## Research results
-
-### XGBoost / ML (model.py)
-**Dead end.** XGBoost on 18 standard indicator features gives AUC ≈ 0.50 (coin flip). Price-derived features carry no predictive signal at bar level on 8 months of M5 data for a highly liquid index.
-
-### Time-of-day analysis (03_time_analysis.py) — THE KEY FINDING
-
-Win rates by UTC hour (TP = SL = 1×ATR, 2h lookahead, symmetric label):
-
-**Hour 22 UTC (= 17:00 ET, last hour of US equities session):**
-- Long WR: **56.4%** vs 50% baseline → z = +5.15, p < 0.0001 — survives Bonferroni
-- Short WR: 37.0% → z = −10.50 — also survives, but unprofitable direction
-- Cause: **power-hour / closing-auction effect** — institutional end-of-day rebalancing
-
-No other hour survives Bonferroni correction. No short signal is exploitable.
-
-### Power-hour strategy (power_hour.py)
-
-Three entry modes, 22:00–22:44 UTC, TP = SL = 1×ATR:
-
-| Mode | WR | Fill rate | Sharpe | P&L |
-|---|---|---|---|---|
-| Market | 56.4% | 99% | −1.69 | −254 pts |
-| Stop (+0.15×ATR above) | 57.3% | 61% | −1.41 | −168 pts |
-| Limit (−0.15×ATR below) | 55.1% | 58% | −1.69 | −205 pts |
-
-**Why still losing:** break-even WR = 58.2% (spread eats the edge). Gap = −0.9pp to −1.8pp.
-
-### The one number that matters
-
-```
-Break-even WR = (SL×ATR + spread) / (TP×ATR + SL×ATR + 2×spread)
-              = (4.25 + 0.70) / (4.25 + 4.25 + 1.40) = 58.2%
-
-Current WR  = 56.4% (market) / 57.3% (stop entry)
-Gap         = −1.8pp / −0.9pp to profitability
-Target      > 58.5%
-```
-
-### Strategy search (05_strategy_search.py)
-
-Converts features to ~50 binary conditions (MACD positive, above VWAP, RSI < 65, etc.) and:
-1. Trains a Random Forest (300 trees) on them → importance ranking
-2. Tests each condition alone: win rate, N trades, EV/trade vs base
-3. Tests all pairs of the top-15 conditions: best combinations
-
-Output in `results/05_strategy_table.csv`. This is the main tool for finding secondary filters.
-
----
-
-## Where we stopped — next session starts here
-
-**Goal:** Push WR from 56.4% → 59%+ using secondary entry filters layered on top of the 22:00 UTC window condition. Need ≥150 trades retained to keep statistical validity.
-
-**Immediate next step:** Run `05_strategy_search.py` and read `05_strategy_table.csv`. Look for:
-- Single conditions with WR > 59% and N > 150
-- Condition pairs with WR > 59% and N > 100
-
-**Candidate filters to check (from 05_strategy_table.csv):**
-1. `above_vwap` — session has been bullish, institutional buyers still active
-2. `above_ema50` — in uptrend context (EMA50 = medium-term trend)
-3. `rsi_below_65` — not overbought before the push
-4. `macd_positive` — momentum is positive at entry bar
-5. `vol_contracting` — rvol_20 < rvol_60 (pre-breakout compression)
-6. `ema_bullish` — EMA9 > EMA21 > EMA50 (all aligned up)
-7. `1h_momentum_up` — ret_1h > 0 (positive hour-level context)
-
-**After filter analysis:** If a condition (or pair) clears 58.5%+, validate it walk-forward (expanding windows), then build `orders.py` for live MT5 execution.
+**Rollover cost log:** `data/rollover_ledger.csv` — updated automatically by `01a_account_history.py`.
 
 ---
 
@@ -217,43 +105,25 @@ Output in `results/05_strategy_table.csv`. This is the main tool for finding sec
 ## How to resume
 
 ```bash
-# Fetch fresh MT5 data (required if >12h since last run)
+# Refresh OHLCV data (required if >12h since last run)
 python 01_fetch_data.py
 
-# Live account check
-python 02_account.py
+# Full account dashboard: equity curve, rollover model, margin chart
+python 01a_account_history.py
 
-# Time-of-day statistics (offline if data fresh)
-python 03_time_analysis.py
+# Live position map + what-if equity drop scenarios
+python 01b_positions_chart.py
 
-# Build full feature matrix (run once after fetching data)
-python 04_build_features.py
-# → results/04_features_full.csv
-
-# Search for best entry conditions using Random Forest
-python 05_strategy_search.py
-# → results/05_strategy_table.csv
-
-# Backtest power-hour and baseline strategies
-python 06_backtest.py
-
-# Visual per-trade review
-python 07_trade_charts.py power_hour_stop_trades --wins
-python 07_trade_charts.py power_hour_stop_trades --losses
-
-# Power-hour bars CSV + chart
-python 08_export_csv.py
+# Ladder safety check: margin level at each rung trigger
+python 01c_ladder_calc.py
 ```
 
 ---
 
 ## Still to build
 
-- `orders.py` — place/close market and pending orders via MT5
-- Walk-forward validation of the best filtered strategy
-- Position sizing logic (fixed fraction / Kelly)
-- Live execution loop with configurable check interval
-- Short strategy (no signal strong enough yet — do not build)
+- `orders.py` — place/close market and pending orders via MT5 (for rollover close-reopen automation)
+- Rollover alert: notify when <30 min to rollover date so positions can be closed in time
 
 ---
 

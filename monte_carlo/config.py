@@ -64,7 +64,7 @@ PENDING_ORDERS = [
 N_PATHS   = 10_000   # Monte Carlo paths
 N_DAYS    = 90       # trading days to simulate
 T_DF      = 4        # Student-t degrees of freedom (fat tails)
-HIST_DAYS = 252      # days of SPX history to calibrate drift / vol
+HIST_DAYS = 1260      # days of SPX history to calibrate drift / vol
 SPX_TICKER = "^GSPC"
 
 # ── Risk thresholds ───────────────────────────────────────────────────────────
