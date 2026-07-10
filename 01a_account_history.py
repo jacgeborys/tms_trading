@@ -769,7 +769,8 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
          info, currency: str,
          rollover_dates: list = None,
          margin_call_pct: float = 100.0,
-         margin_so_pct: float = 50.0) -> plt.Figure:
+         margin_so_pct: float = 50.0,
+         x_start: pd.Timestamp = None) -> plt.Figure:
     plt.style.use("dark_background")
 
     has_ts = not ts.empty
@@ -977,6 +978,10 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
     ax3.grid(True, alpha=0.18)
     plt.setp(ax3.get_xticklabels(), rotation=20, ha="right", fontsize=7)
 
+    if x_start is not None:
+        x_start_np = np.datetime64(x_start.tz_convert(None) if x_start.tzinfo else x_start)
+        ax1.set_xlim(left=x_start_np)
+
     plt.tight_layout()
     return fig
 
@@ -1029,7 +1034,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--months", type=int, default=None,
-                        help="Show last N months instead of from HISTORY_START")
+                        help="Zoom plot to last N months instead of from HISTORY_START")
     parser.add_argument("--all", dest="show_all", action="store_true",
                         help="Show from the earliest open position")
     args = parser.parse_args()
@@ -1080,14 +1085,8 @@ def main():
         ts = pd.DataFrame()
         if not positions.empty:
             print("\nReconstructing equity from cached M5 price data...")
-            if args.show_all:
-                cutoff = None
-            elif args.months is not None:
-                cutoff = pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
-            else:
-                cutoff = HISTORY_START
             ts = reconstruct_equity(positions, bal_events, trade_deals, open_deals,
-                                    info.margin, leverage, t_start=cutoff,
+                                    info.margin, leverage, t_start=None,
                                     rollover_costs=rollover_costs)
             if not ts.empty:
                 print(f"  {len(ts):,} bars  "
@@ -1108,10 +1107,17 @@ def main():
             print_margin_diagnostic(ts, "2026-03")
 
         past_rollover_dates = [d for d in compute_rollover_dates() if d <= now]
+        if args.show_all:
+            x_start = None
+        elif args.months is not None:
+            x_start = pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
+        else:
+            x_start = HISTORY_START
         fig = plot(ts, bal_events, info, currency,
                    rollover_dates=past_rollover_dates,
                    margin_call_pct=margin_call_pct,
-                   margin_so_pct=margin_so_pct)
+                   margin_so_pct=margin_so_pct,
+                   x_start=x_start)
         _save_chart(fig, "01a_account_history")
         plt.show()
 
