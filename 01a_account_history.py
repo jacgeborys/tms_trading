@@ -670,7 +670,8 @@ def compute_rollover_costs(positions: pd.DataFrame) -> dict:
         t_open = pos["time_open"]
         if t_open.tzinfo is None:
             t_open = t_open.tz_localize("UTC")
-        n   = sum(1 for r in past_rollovers if r > t_open)
+        t_open_date = t_open.tz_convert("UTC").date()
+        n   = sum(1 for r in past_rollovers if r.date() >= t_open_date)
         vol = float(pos["volume"])
         swap_per_001 = float(pos["swap"]) / (vol / 0.001) if vol > 0 else 0.0
         rows.append({"n_rollovers": n, "swap_per_001": swap_per_001, "volume": vol})
@@ -712,7 +713,8 @@ def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
         t_open = pos["time_open"]
         if t_open.tzinfo is None:
             t_open = t_open.tz_localize("UTC")
-        n   = sum(1 for r in past_rollovers if r > t_open)
+        t_open_date = t_open.tz_convert("UTC").date()
+        n   = sum(1 for r in past_rollovers if r.date() >= t_open_date)
         vol = float(pos["volume"])
         swap_per_001 = float(pos["swap"]) / (vol / 0.001) if vol > 0 else 0.0
         rows.append({"n_rollovers": n, "swap_per_001": swap_per_001, "volume": vol})
