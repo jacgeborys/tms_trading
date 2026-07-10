@@ -32,8 +32,29 @@ import matplotlib.gridspec as gridspec
 import matplotlib.ticker as mticker
 import MetaTrader5 as mt5
 
+from pathlib import Path
 from mt5_client import connect, disconnect
-import cache
+
+# Inline replacements for the archived cache module
+_ROOT   = Path(__file__).parent
+_DATA   = _ROOT / "data"
+_CHARTS = _ROOT / "results" / "charts"
+
+def _load_ohlcv(symbol: str, timeframe: str):
+    safe = symbol.replace(".", "_")
+    path = _DATA / f"{safe}_{timeframe}.pkl"
+    if path.exists():
+        df = pd.read_pickle(path)
+        age_h = (datetime.now(timezone.utc).timestamp() - path.stat().st_mtime) / 3600
+        print(f"  Loaded {len(df):,} bars from cache ({age_h:.1f}h old) ← {path.name}")
+        return df
+    return None
+
+def _save_chart(fig, name: str):
+    _CHARTS.mkdir(parents=True, exist_ok=True)
+    path = _CHARTS / f"{name}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    print(f"  Saved chart → results/charts/{name}.png")
 
 DEAL_TYPE_BALANCE = 2
 EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
@@ -192,7 +213,7 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     symbol_data = {}
     for sym in positions["symbol"].unique():
         for tf in ("M5", "H1"):
-            df = cache.load_ohlcv(sym, tf)
+            df = _load_ohlcv(sym, tf)
             if df is None:
                 continue
             # Normalise to tz-naive UTC — avoids mixed-tz comparison bugs
@@ -1085,7 +1106,7 @@ def main():
                    rollover_dates=past_rollover_dates,
                    margin_call_pct=margin_call_pct,
                    margin_so_pct=margin_so_pct)
-        cache.save_chart(fig, "01a_account_history")
+        _save_chart(fig, "01a_account_history")
         plt.show()
 
     finally:
