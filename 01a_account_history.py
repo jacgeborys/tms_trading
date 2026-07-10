@@ -1081,11 +1081,11 @@ def main():
         if not positions.empty:
             print("\nReconstructing equity from cached M5 price data...")
             if args.show_all:
-            cutoff = None
-        elif args.months is not None:
-            cutoff = pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
-        else:
-            cutoff = HISTORY_START
+                cutoff = None
+            elif args.months is not None:
+                cutoff = pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
+            else:
+                cutoff = HISTORY_START
             ts = reconstruct_equity(positions, bal_events, trade_deals, open_deals,
                                     info.margin, leverage, t_start=cutoff,
                                     rollover_costs=rollover_costs)
