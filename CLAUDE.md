@@ -11,7 +11,7 @@ Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 conne
 | Property | Value |
 |---|---|
 | Account | 62611585 on OANDATMS-MT5 |
-| Balance | 50,000 PLN (demo) |
+| Balance | ~15,900 PLN (live account) |
 | Instrument | US500.pro |
 | Contract size | 50 (1 lot = 50 × index price) |
 | Leverage | 20× |
