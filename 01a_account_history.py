@@ -526,6 +526,68 @@ def print_swap_analysis(trade_deals: pd.DataFrame, currency: str = "PLN"):
     print(f"{'═'*55}")
 
 
+# ── Rollover ledger ────────────────────────────────────────────────────────────
+# Persistent record of per-rollover swap costs for US500.pro.
+# Stored in data/ (not results/) because it is permanent reference data that
+# must survive across years, long after the positions that generated it are closed.
+
+ROLLOVER_LEDGER_PATH = "data/rollover_ledger.csv"
+
+
+def load_rollover_ledger() -> dict:
+    """
+    Load the persisted rollover cost ledger.
+    Returns {pd.Timestamp (UTC) → cost_per_0001_lot (float)}.
+    Returns an empty dict if the file does not exist yet.
+    """
+    import os
+    if not os.path.exists(ROLLOVER_LEDGER_PATH):
+        return {}
+    df = pd.read_csv(ROLLOVER_LEDGER_PATH, parse_dates=["date"])
+    df["date"] = pd.to_datetime(df["date"], utc=True)
+    return {row["date"]: float(row["cost_per_0001_lot"]) for _, row in df.iterrows()}
+
+
+def save_rollover_ledger(costs: dict, symbol: str = "US500.pro"):
+    """
+    Merge computed rollover costs into the persistent ledger CSV.
+    New entries are added; existing entries for the same date are overwritten
+    (live back-calculation is always the most accurate source while positions are open).
+    Prints a summary of what was saved.
+    """
+    import os
+    os.makedirs("data", exist_ok=True)
+
+    # Load existing rows (may include other symbols or manually entered data)
+    if os.path.exists(ROLLOVER_LEDGER_PATH):
+        existing = pd.read_csv(ROLLOVER_LEDGER_PATH, parse_dates=["date"])
+        existing["date"] = pd.to_datetime(existing["date"], utc=True)
+    else:
+        existing = pd.DataFrame(columns=["date", "symbol", "cost_per_0001_lot", "source"])
+
+    new_rows = pd.DataFrame([
+        {"date":               rdate,
+         "symbol":             symbol,
+         "cost_per_0001_lot":  round(cost, 4),
+         "source":             "back-calculated from open positions"}
+        for rdate, cost in costs.items()
+    ])
+
+    if new_rows.empty:
+        return
+
+    # Keep existing rows for other symbols / dates not in new_rows; overwrite matches
+    mask_same = (
+        existing["symbol"].eq(symbol) &
+        existing["date"].isin(new_rows["date"])
+    )
+    merged = pd.concat([existing[~mask_same], new_rows], ignore_index=True)
+    merged = merged.sort_values(["symbol", "date"]).reset_index(drop=True)
+    merged.to_csv(ROLLOVER_LEDGER_PATH, index=False)
+    print(f"\n  Rollover ledger saved → {ROLLOVER_LEDGER_PATH}  "
+          f"({len(merged)} total entries)")
+
+
 # ── Rollover model ─────────────────────────────────────────────────────────────
 
 # Official OANDA TMS rollover dates for US500.pro (from broker PDF "Tabela rolowań 2026").
@@ -592,14 +654,21 @@ def compute_rollover_costs(positions: pd.DataFrame) -> dict:
     df     = pd.DataFrame(rows)
     groups = df.groupby("n_rollovers")["swap_per_001"].mean().sort_index().to_dict()
 
-    costs = {}
+    # Back-calculate from live positions
+    live_costs = {}
     for n in sorted(groups):
         if n == 0:
             continue
         cost = groups[n] - groups.get(n - 1, 0.0)
         if n - 1 < len(past_desc):
-            costs[past_desc[n - 1]] = cost
-    return costs
+            live_costs[past_desc[n - 1]] = cost
+
+    # Merge with ledger: ledger fills in dates not covered by live positions
+    # (e.g. after the positions that witnessed a rollover are closed).
+    # Live back-calculation takes priority for dates it CAN see.
+    ledger = load_rollover_ledger()
+    merged = {**ledger, **live_costs}   # live_costs overwrites ledger for same dates
+    return merged
 
 
 def print_rollover_model(positions: pd.DataFrame, currency: str = "PLN"):
@@ -966,6 +1035,8 @@ def main():
         print_rollover_model(positions, currency)
 
         rollover_costs = compute_rollover_costs(positions)
+        if rollover_costs:
+            save_rollover_ledger(rollover_costs)
 
         # ── Save deal history to CSV for offline inspection ───────────────────
         import os
