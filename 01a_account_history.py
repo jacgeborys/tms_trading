@@ -59,6 +59,9 @@ def _save_chart(fig, name: str):
 DEAL_TYPE_BALANCE = 2
 EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
+# Chart window: history is shown from this date forward (override with --months or --all)
+HISTORY_START = pd.Timestamp("2026-01-01", tz="UTC")
+
 
 # ── Data fetching ──────────────────────────────────────────────────────────────
 
@@ -1025,8 +1028,8 @@ def print_margin_diagnostic(ts: pd.DataFrame, date_str: str = "2026-03"):
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--months", type=int, default=6,
-                        help="How many recent months to display (default: 4)")
+    parser.add_argument("--months", type=int, default=None,
+                        help="Show last N months instead of from HISTORY_START")
     parser.add_argument("--all", dest="show_all", action="store_true",
                         help="Show from the earliest open position")
     args = parser.parse_args()
@@ -1077,9 +1080,12 @@ def main():
         ts = pd.DataFrame()
         if not positions.empty:
             print("\nReconstructing equity from cached M5 price data...")
-            cutoff = None if args.show_all else (
-                pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
-            )
+            if args.show_all:
+            cutoff = None
+        elif args.months is not None:
+            cutoff = pd.Timestamp.now(tz="UTC") - pd.DateOffset(months=args.months)
+        else:
+            cutoff = HISTORY_START
             ts = reconstruct_equity(positions, bal_events, trade_deals, open_deals,
                                     info.margin, leverage, t_start=cutoff,
                                     rollover_costs=rollover_costs)
