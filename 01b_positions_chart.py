@@ -37,8 +37,29 @@ import matplotlib.gridspec as gridspec
 import matplotlib.ticker as mticker
 import MetaTrader5 as mt5
 
+from pathlib import Path
 from mt5_client import connect, disconnect
-import cache
+
+# Inline replacements for the archived cache module
+_ROOT   = Path(__file__).parent
+_DATA   = _ROOT / "data"
+_CHARTS = _ROOT / "results" / "charts"
+
+def _load_ohlcv(symbol: str, timeframe: str):
+    safe = symbol.replace(".", "_")
+    path = _DATA / f"{safe}_{timeframe}.pkl"
+    if path.exists():
+        df = pd.read_pickle(path)
+        age_h = (datetime.now(timezone.utc).timestamp() - path.stat().st_mtime) / 3600
+        print(f"  Loaded {len(df):,} bars from cache ({age_h:.1f}h old) ← {path.name}")
+        return df
+    return None
+
+def _save_chart(fig, name: str):
+    _CHARTS.mkdir(parents=True, exist_ok=True)
+    path = _CHARTS / f"{name}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    print(f"  Saved chart → results/charts/{name}.png")
 
 CONTRACT_SIZE = 50.0
 ENTRY_COLOR   = "#ffe033"   # single accent colour for all entry markers
@@ -101,7 +122,7 @@ def get_price_data(symbol: str, tf: str, n_bars: int,
         return df.reset_index(drop=True)
 
     # n_bars mode — cache first
-    df = cache.load_ohlcv(symbol, tf)
+    df = _load_ohlcv(symbol, tf)
     if df is not None and len(df) >= n_bars:
         df = df.tail(n_bars).reset_index(drop=True)
         return df
@@ -514,7 +535,7 @@ def main():
         print(f"  {len(price_df)} bars loaded.")
 
         fig = plot(positions, price_df, info, args.tf)
-        cache.save_chart(fig, "01b_positions_chart")
+        _save_chart(fig, "01b_positions_chart")
         plt.show()
 
     finally:

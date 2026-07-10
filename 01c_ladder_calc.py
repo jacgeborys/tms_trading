@@ -36,8 +36,16 @@ import matplotlib.gridspec as gridspec
 import matplotlib.ticker as mticker
 import MetaTrader5 as mt5
 
+from pathlib import Path
 from mt5_client import connect, disconnect
-import cache
+
+_CHARTS = Path(__file__).parent / "results" / "charts"
+
+def _save_chart(fig, name: str):
+    _CHARTS.mkdir(parents=True, exist_ok=True)
+    path = _CHARTS / f"{name}.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+    print(f"  Saved chart → results/charts/{name}.png")
 
 CONTRACT_SIZE  = 50.0
 INSTR_LEVERAGE = 20
@@ -369,7 +377,7 @@ def main():
         print_summary(state, sc, n, d, x)
 
         fig = plot(state, sc, n, d, x, lot_sizes, args.min_ml)
-        cache.save_chart(fig, "01c_ladder_calc")
+        _save_chart(fig, "01c_ladder_calc")
         plt.show()
 
     finally:

@@ -14,9 +14,17 @@ Usage:
 """
 
 import sys
+from pathlib import Path
 from mt5_client import connect, disconnect
 from data import get_candles
-import cache
+
+_DATA = Path(__file__).parent / "data"
+
+def _save_ohlcv(df, symbol: str, timeframe: str):
+    _DATA.mkdir(parents=True, exist_ok=True)
+    path = _DATA / f"{symbol.replace('.', '_')}_{timeframe}.pkl"
+    df.to_pickle(path)
+    print(f"  Saved {len(df):,} bars → {path.name}")
 
 SYMBOLS = ["US500.pro", "US100.pro", "US30.pro", "GOLD.pro"]
 TIMEFRAMES = {
@@ -36,7 +44,7 @@ def main():
             print(f"  Fetching {symbol} {tf}  (up to {n_bars:,} bars)...")
             try:
                 df = get_candles(n=n_bars, symbol=symbol, timeframe=tf)
-                cache.save_ohlcv(df, symbol, tf)
+                _save_ohlcv(df, symbol, tf)
             except Exception as e:
                 print(f"    WARNING: {e}")
 
