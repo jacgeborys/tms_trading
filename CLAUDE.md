@@ -38,6 +38,7 @@ tms/
 ├── 01a_account_history.py      equity curve, rollover model, margin chart (main daily script)
 ├── 01b_positions_chart.py      live position map + what-if equity at price drop scenarios
 ├── 01c_ladder_calc.py          ladder safety calculator: ML% at each rung trigger depth
+├── 01d_rollover_tax_calc.py    swap cost vs Belka tax scenario analysis (Sep + Dec rollovers)
 │
 ├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   symbol, leverage, magic number constants
@@ -86,7 +87,7 @@ Holding a large long position in US500.pro built up via buy-limit ladder orders.
 
 **Next rollover: September 16, 2026** — close all positions ~30 min before, reopen with one market order. Saves ~42× vs paying the rollover (~11 PLN/0.001 lot vs ~0.26 PLN spread).
 
-**Tax consideration (live account):** Closing positions crystallizes unrealized gains as taxable income under Polish Belka tax (19% flat). If sitting on a large gain at rollover, the tax cost may exceed the swap saving — in that case pay the swap and skip the close-reopen. If sitting at a loss, close-reopen is pure win (saves swap + crystallizes a tax loss). Decision rule: close-reopen only if (swap saving) > (0.19 × unrealized gain at rollover time).
+**Tax consideration (live account):** Closing positions crystallizes unrealized gains as taxable income under Polish Belka tax (19% flat, PIT-38, net annual, loss carryforward 5 years at max 50%/year). Key insight: swap costs are tax-deductible when positions eventually close, so effective swap cost = face × 0.81. Run `01d_rollover_tax_calc.py` for full scenario analysis before each rollover decision.
 
 **Rollover cost log:** `data/rollover_ledger.csv` — updated automatically by `01a_account_history.py`.
 
