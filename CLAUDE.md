@@ -2,7 +2,7 @@
 
 ## What this project is
 
-Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 connected to OANDA demo account** (account 62611585, server OANDATMS-MT5). Written in Python 3.8. **Current phase: buy-and-hold accumulation with ladder pending orders.** Power-hour research phase concluded (WR 56.4%, below 58.2% break-even) — archived.
+Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 connected to OANDA live account** (account 62611585, server OANDATMS-MT5). Written in Python 3.8. **Current phase: buy-and-hold accumulation with ladder pending orders.** Power-hour research phase concluded (WR 56.4%, below 58.2% break-even) — archived.
 
 ---
 
@@ -127,6 +127,21 @@ python 01c_ladder_calc.py
 
 - `orders.py` — place/close market and pending orders via MT5 (for rollover close-reopen automation)
 - Rollover alert: notify when <30 min to rollover date so positions can be closed in time
+
+---
+
+## Verified empirical findings
+
+Things that required real investigation to establish — do not re-derive without new evidence.
+
+| Finding | Evidence | Implication |
+|---|---|---|
+| US500.pro tracks cash S&P 500, not futures | Zero price gap in M5 data around March 18 and June 17 2026 rollovers (max bar-to-bar move 0.3 pts, normal noise) | Close-reopen at rollover is not a wash — you reopen at the same price, saving the full swap cost |
+| Rollover swap is not visible as a deal in MT5 history | Scanned all deal types (BALANCE, CORRECTION, DIVIDEND, INTEREST, etc.) — none correspond to rollover charges | Swap accumulates silently on `position.swap` field; only visible via `mt5.positions_get()` |
+| Rollover costs: March −9.52, June −12.53 PLN / 0.001 lot | Back-calculated from survivorship grouping of open positions by rollover count | Projected September cost ~−12–13 PLN / 0.001 lot at current rates |
+| Rollover charge occurs during business hours on rollover day, not midnight | Two positions opened June 17 at 16:47 and 20:05 UTC accumulated full −12.53 swap | Rollover cutoff in code must use date comparison, not midnight datetime (bug fixed in `01a`) |
+| S&P dividend yield (~1.3%) < Fed funds rate (~4–4.5%) | Standard macro data | Rollover swap will remain negative for longs until rates fall below dividend yield (~ZIRP conditions). Not expected near-term |
+| Power-hour edge (22 UTC, WR 56.4%) is not profitable | Break-even requires 58.2% WR given 0.7 pt spread. Gap −1.8pp. Confirmed across market/stop/limit entry modes | Research phase closed. No secondary filter found that clears the gap |
 
 ---
 
