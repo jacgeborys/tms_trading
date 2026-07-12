@@ -17,6 +17,7 @@ Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 conne
 | Leverage | 20× |
 | Spread | **Fixed 0.7 pts at all hours** (confirmed from 66,959 ticks) |
 | Lot limits | 0.001 – 4.0, step 0.001 |
+| Price feed | Tracks **cash S&P 500 index** continuously — no futures price gap at rollover |
 | Overnight swap | None (no daily financing charge) |
 | Quarterly rollover | Yes — charged as swap on the position at rollover date. OANDA rolls on **Wednesday before 3rd Friday** of Mar/Jun/Sep/Dec. 2026 dates: Mar 18, Jun 17, Sep 16, Dec 16. Source: `data/tabela_rolowan_1.01.2026_pl_mt5_0.pdf` |
 | Rollover cost (observed) | March 2026: −9.52 PLN / 0.001 lot; June 2026: −12.53 PLN / 0.001 lot (back-calculated from open positions via `print_rollover_model()` in 01a) |
@@ -84,6 +85,8 @@ Holding a large long position in US500.pro built up via buy-limit ladder orders.
 4. `python 01c_ladder_calc.py` — verify ladder spacing leaves safe ML%
 
 **Next rollover: September 16, 2026** — close all positions ~30 min before, reopen with one market order. Saves ~42× vs paying the rollover (~11 PLN/0.001 lot vs ~0.26 PLN spread).
+
+**Tax consideration (live account):** Closing positions crystallizes unrealized gains as taxable income under Polish Belka tax (19% flat). If sitting on a large gain at rollover, the tax cost may exceed the swap saving — in that case pay the swap and skip the close-reopen. If sitting at a loss, close-reopen is pure win (saves swap + crystallizes a tax loss). Decision rule: close-reopen only if (swap saving) > (0.19 × unrealized gain at rollover time).
 
 **Rollover cost log:** `data/rollover_ledger.csv` — updated automatically by `01a_account_history.py`.
 
