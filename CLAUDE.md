@@ -85,11 +85,39 @@ Holding a large long position in US500.pro built up via buy-limit ladder orders.
 3. `python 01b_positions_chart.py` — check current position map + what-if scenarios
 4. `python 01c_ladder_calc.py` — verify ladder spacing leaves safe ML%
 
-**Next rollover: September 16, 2026** — close all positions ~30 min before, reopen with one market order. Saves ~42× vs paying the rollover (~11 PLN/0.001 lot vs ~0.26 PLN spread).
+**Next rollover: September 16, 2026** — close all positions before daily break, reopen when trading resumes. Saves ~42× vs paying the rollover (~12.5 PLN/0.001 lot vs ~0.26 PLN spread). See **Rollover execution plan** below for exact timing.
 
 **Tax consideration (live account):** Closing positions crystallizes unrealized gains as taxable income under Polish Belka tax (19% flat, PIT-38, net annual, loss carryforward 5 years at max 50%/year). Key insight: swap costs are tax-deductible when positions eventually close, so effective swap cost = face × 0.81. Run `01d_rollover_tax_calc.py` for full scenario analysis before each rollover decision.
 
 **Rollover cost log:** `data/rollover_ledger.csv` — updated automatically by `01a_account_history.py`.
+
+### Rollover execution plan
+
+Rollover is applied **after the daily trading session close at 22:59 Polish time** (confirmed by OANDA TMS broker advisor). In summer (CEST = UTC+2) this is **20:59 UTC**. Trading halts at 22:58 M1 bar and resumes at ~00:00 UTC next day (~62 min break).
+
+**Execution sequence for Sep 16, 2026 (summer/CEST):**
+
+| Step | Polish time | UTC | Action |
+|------|------------|-----|--------|
+| 1 | 22:50–22:55 | 20:50–20:55 | Close all positions (market sell) |
+| 2 | 22:59 | 20:59 | Trading day ends — rollover applied to open positions |
+| 3 | ~00:00+1d | ~00:00+1d | Trading resumes — reopen full position (market buy) |
+
+**Why market orders, not limits:** The 0.7 pt spread cost (~29 PLN for 0.210 lots) is 1.1% of the ~2,625 PLN rollover saved. Optimizing execution with limits risks missing the fill and chasing price after the gap.
+
+**Overnight gap risk (from 117 daily breaks, Jan–Jul 2026):**
+- Median gap: +0.2 pts (negligible)
+- 90% of gaps fall within ±6 pts (≈ ±252 PLN for 0.210 lots)
+- 99% within −13 / +22 pts
+- Worst observed: +52.5 pts (March 18, a crash-bounce day — unrelated to rollover)
+
+**No evidence of mass close-reopen behavior on rollover dates.** Volume in the last trading hour on June 17 rollover was normal-to-low (609 ticks in last M5 bar vs 2,940 average). US500.pro is an OTC CFD — the broker is the counterparty, and most retail traders don't optimize for rollover costs.
+
+**Pre-rollover checklist:**
+1. Check economic calendar — avoid closing during FOMC or major news (June 17 had a −56 pt crash at 20:00 UTC, likely macro-driven)
+2. Verify position sizes via `01b_positions_chart.py`
+3. Confirm the rollover hasn't been applied early (check `position.swap` field)
+4. Close at 22:50–22:55 Polish time, reopen at 00:00 UTC next day
 
 ---
 
@@ -126,8 +154,8 @@ python 01c_ladder_calc.py
 
 ## Still to build
 
-- `orders.py` — place/close market and pending orders via MT5 (for rollover close-reopen automation)
-- Rollover alert: notify when <30 min to rollover date so positions can be closed in time
+- `orders.py` — place/close market and pending orders via MT5 (for rollover close-reopen automation: market sell all, then market buy same volume at session reopen)
+- Rollover alert: notify on rollover day (Sep 16) that positions must be closed by 22:55 Polish time
 
 ---
 
@@ -140,7 +168,10 @@ Things that required real investigation to establish — do not re-derive withou
 | US500.pro tracks cash S&P 500, not futures | Zero price gap in M5 data around March 18 and June 17 2026 rollovers (max bar-to-bar move 0.3 pts, normal noise) | Close-reopen at rollover is not a wash — you reopen at the same price, saving the full swap cost |
 | Rollover swap is not visible as a deal in MT5 history | Scanned all deal types (BALANCE, CORRECTION, DIVIDEND, INTEREST, etc.) — none correspond to rollover charges | Swap accumulates silently on `position.swap` field; only visible via `mt5.positions_get()` |
 | Rollover costs: March −9.52, June −12.53 PLN / 0.001 lot | Back-calculated from survivorship grouping of open positions by rollover count | Projected September cost ~−12–13 PLN / 0.001 lot at current rates |
-| Rollover charge occurs during business hours on rollover day, not midnight | Two positions opened June 17 at 16:47 and 20:05 UTC accumulated full −12.53 swap | Rollover cutoff in code must use date comparison, not midnight datetime (bug fixed in `01a`) |
+| Rollover cutoff is 22:59 Polish time (after daily session close) | Confirmed by OANDA TMS broker advisor ("po zamknięciu doby handlowej czyli po 22:59"). Consistent with June 17 data: positions opened at 16:47 and 20:05 UTC (both before 20:59 UTC = 22:59 CEST) got charged | Close positions before 22:55 Polish time on rollover day; reopen after 00:00 UTC next day |
+| Daily session break: 22:58 UTC → ~00:00 UTC (~62 min) | M1 data shows last bar at 22:58, first bar at 00:00 on every trading day | You're unavoidably unhedged for ~62 min during the break |
+| Overnight gap is small and symmetric | 117 daily breaks: median +0.2 pts, P5/P95 = −6/+5 pts, worst +52.5 pts (crash-bounce) | Gap risk for 0.210 lots is ~±252 PLN at P95 — small vs ~2,625 PLN rollover saved |
+| No mass close-reopen on rollover dates | June 17 rollover: last M5 bar volume 609 ticks vs 2,940 daily average. No selling pressure spike before break | No need to worry about adverse price impact from other traders closing |
 | S&P dividend yield (~1.3%) < Fed funds rate (~4–4.5%) | Standard macro data | Rollover swap will remain negative for longs until rates fall below dividend yield (~ZIRP conditions). Not expected near-term |
 | Power-hour edge (22 UTC, WR 56.4%) is not profitable | Break-even requires 58.2% WR given 0.7 pt spread. Gap −1.8pp. Confirmed across market/stop/limit entry modes | Research phase closed. No secondary filter found that clears the gap |
 
