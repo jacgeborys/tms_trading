@@ -186,7 +186,7 @@ def sensitivity_curve(positions: pd.DataFrame, info, pln_rate: float,
     """
     Sweep a price range and compute equity + margin_level at every point.
 
-    upnl(P)   = pln_rate × cs × Σ [ dir_i × (P − entry_i) × vol_i ]
+    upnl(P)   = pln_rate × cs × Σ [ dir_i × (P − entry_i) × vol_i ] + total_swap
     margin(P) = pln_rate × cs × Σ(vol_i) × P / leverage   (OANDA marks to market)
     equity(P) = balance + upnl(P)
     """
@@ -195,6 +195,7 @@ def sensitivity_curve(positions: pd.DataFrame, info, pln_rate: float,
     dirs     = positions["direction"].values
     balance  = info.balance
     leverage = INSTR_LEVERAGE   # 20 — instrument-specific, not max account leverage
+    total_swap = positions["swap"].sum()  # already in PLN, negative for longs
 
     current_price = float(positions["price_current"].mean())
     lo = min(entries.min(), current_price) * 0.90
@@ -203,7 +204,7 @@ def sensitivity_curve(positions: pd.DataFrame, info, pln_rate: float,
 
     net_vol_dir = (dirs * vols).sum()
     net_cost    = (dirs * vols * entries).sum()
-    upnl        = pln_rate * CONTRACT_SIZE * (net_vol_dir * prices - net_cost)
+    upnl        = pln_rate * CONTRACT_SIZE * (net_vol_dir * prices - net_cost) + total_swap
 
     equity = balance + upnl
 
@@ -235,28 +236,36 @@ def print_summary(positions: pd.DataFrame, info, ve: float,
                   break_even: float, mc_price, warn_price):
     now = pd.Timestamp.now(tz="UTC")
     cur = float(positions["price_current"].iloc[0])
-    print(f"\n{'═'*68}")
+    print(f"\n{'═'*90}")
     print(f"  POSITION MAP — US500.pro  |  "
           f"Balance {info.balance:,.0f}  Equity {info.equity:,.0f}  "
           f"ML {info.margin_level:.0f}%  ({info.currency})")
-    print(f"{'═'*68}")
+    print(f"{'═'*90}")
     print(f"  {'Ticket':>10}  {'Dir':4}  {'Lots':>5}  "
-          f"{'Entry':>8}  {'Current':>8}  {'P&L':>10}  {'Age':>10}")
+          f"{'Entry':>8}  {'Current':>8}  {'P&L':>10}  {'Swap':>10}  {'Net':>10}  {'Age':>10}")
     print(f"  {'-'*10}  {'-'*4}  {'-'*5}  "
-          f"{'-'*8}  {'-'*8}  {'-'*10}  {'-'*10}")
+          f"{'-'*8}  {'-'*8}  {'-'*10}  {'-'*10}  {'-'*10}  {'-'*10}")
     for _, p in positions.iterrows():
         direction = "BUY " if p["type"] == 0 else "SELL"
         age_h = (now - p["time_open"]).total_seconds() / 3600
         age_s = f"{age_h:.0f}h ago" if age_h < 48 else f"{age_h/24:.1f}d ago"
-        sign  = "+" if p["profit"] >= 0 else ""
+        net = p["profit"] + p["swap"]
+        sign  = "+" if net >= 0 else ""
         print(f"  {p['ticket']:>10}  {direction}  {p['volume']:>5.3f}  "
               f"{p['price_open']:>8.1f}  {cur:>8.1f}  "
-              f"{sign}{p['profit']:>9.2f}  {age_s:>10}")
-    print(f"{'─'*68}")
-    total_pl = positions["profit"].sum()
-    sp = "+" if total_pl >= 0 else ""
+              f"{'+' if p['profit']>=0 else ''}{p['profit']:>9.2f}  "
+              f"{p['swap']:>+10.2f}  "
+              f"{sign}{net:>9.2f}  {age_s:>10}")
+    print(f"{'─'*90}")
+    total_pl   = positions["profit"].sum()
+    total_swap = positions["swap"].sum()
+    total_net  = total_pl + total_swap
+    sp = "+" if total_net >= 0 else ""
     print(f"  {'TOTAL':>10}  {'':4}  {positions['volume'].sum():>5.3f}  "
-          f"  VWAP {ve:>8.1f}  {sp}{total_pl:>9.2f}")
+          f"  VWAP {ve:>8.1f}  "
+          f"{'+' if total_pl>=0 else ''}{total_pl:>9.2f}  "
+          f"{total_swap:>+10.2f}  "
+          f"{sp}{total_net:>9.2f}")
     print(f"\n  Break-even   : {break_even:>8.1f}  "
           f"(dist from current: {cur - break_even:+.1f} pts)")
     if warn_price:
@@ -267,7 +276,7 @@ def print_summary(positions: pd.DataFrame, info, ve: float,
         print(f"  Margin call  : {mc_price:>8.1f}  "
               f"(dist: {cur - mc_price:+.1f} pts  /  "
               f"{(mc_price - cur) / cur * 100:.1f}%)")
-    print(f"{'═'*68}")
+    print(f"{'═'*90}")
 
 
 # ── Candlestick drawing ────────────────────────────────────────────────────────
@@ -298,6 +307,8 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
 
     current_price = float(positions["price_current"].iloc[0])
     total_pl      = positions["profit"].sum()
+    total_swap    = positions["swap"].sum()
+    total_net     = total_pl + total_swap
     total_vol     = positions["volume"].sum()
     n_pos         = len(positions)
     ve            = vwap_entry(positions)
@@ -320,10 +331,10 @@ def plot(positions: pd.DataFrame, price_df: pd.DataFrame,
     ax_price = fig.add_subplot(gs[0])
     ax_sens  = fig.add_subplot(gs[1])
 
-    sp = "+" if total_pl >= 0 else ""
+    sp = "+" if total_net >= 0 else ""
     fig.suptitle(
         f"Position Map — US500.pro  |  {n_pos} entries  {total_vol:.3f} lots  |  "
-        f"P&L {sp}{total_pl:,.0f} {info.currency}  |  "
+        f"Net P&L {sp}{total_net:,.0f} {info.currency}  (swap {total_swap:+,.0f})  |  "
         f"Balance {info.balance:,.0f}  Equity {info.equity:,.0f}  "
         f"ML {info.margin_level:.0f}%",
         fontsize=11,
