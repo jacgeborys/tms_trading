@@ -17,10 +17,11 @@ of buy-limit orders, shows exactly what happens at every rung-trigger depth.
     Optional: overlay alternative lot sizes as dashed lines.
 
 Usage:
-  python 01c_ladder_calc.py                              # 6 × 100pts × 0.005L
+  python 01c_ladder_calc.py                              # 10 × 15pts × 0.001L
+  python 01c_ladder_calc.py --ladder 20,10,0.001         # 20 rungs, 10pt spacing
   python 01c_ladder_calc.py --ladder 8,50,0.005          # custom ladder
-  python 01c_ladder_calc.py --lots 0.003,0.005,0.01      # compare lot sizes
-  python 01c_ladder_calc.py --ladder 5,100,0.005 --min-ml 150
+  python 01c_ladder_calc.py --lots 0.001,0.002,0.003     # compare lot sizes
+  python 01c_ladder_calc.py --ladder 15,12.5,0.001 --min-ml 150
 
 Outputs:
   results/charts/01c_ladder_calc.png
@@ -276,9 +277,9 @@ def plot(state: dict, sc: pd.DataFrame, n: int, d: float, x: float,
     ax1.grid(True, alpha=0.12, axis="y")
 
     # ── Panel 2: Safety frontier ───────────────────────────────────────────────
-    spacings  = [50, 75, 100, 125, 150, 200]
+    spacings  = [10, 12.5, 15, 17.5, 20, 25]
     sp_colors = ["#ef5350", "#f08040", "#ffd700", "#80e080", "#40c0f0", "#c040f0"]
-    n_range   = list(range(1, 16))
+    n_range   = list(range(1, 31))
 
     # Solid: six spacings at proposed lot size
     for sp, col in zip(spacings, sp_colors):
@@ -303,7 +304,7 @@ def plot(state: dict, sc: pd.DataFrame, n: int, d: float, x: float,
     ax2.scatter([n], [wml], color="#ffffff", s=100, zorder=7,
                 label=f"Proposed ({n} × {d:.0f}pts)")
 
-    ax2.set_xlim(0.5, 15.5)
+    ax2.set_xlim(0.5, 30.5)
     ax2.set_ylim(bottom=0)
     ax2.set_xlabel("Number of rungs (n)")
     ax2.set_ylabel("Margin level at worst case (%)")
@@ -326,8 +327,8 @@ def main():
         description="Buy-limit ladder safety calculator for US500.pro."
     )
     parser.add_argument(
-        "--ladder", default="6,100,0.005",
-        help="n,d,x — rungs, spacing(pts), lots/rung  e.g. 8,100,0.005",
+        "--ladder", default="10,15,0.001",
+        help="n,d,x — rungs, spacing(pts), lots/rung  e.g. 20,10,0.001",
     )
     parser.add_argument(
         "--lots", default=None,
