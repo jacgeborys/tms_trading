@@ -39,6 +39,7 @@ tms/
 ├── 01b_positions_chart.py      live position map + what-if equity at price drop scenarios
 ├── 01c_ladder_calc.py          ladder safety calculator: ML% at each rung trigger depth
 ├── 01d_rollover_tax_calc.py    swap cost vs Belka tax scenario analysis (Sep + Dec rollovers)
+├── 01e_tower_chart.py          position tower: vertical stack by entry price, top-heaviness score
 │
 ├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   symbol, leverage, magic number constants

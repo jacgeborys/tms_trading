@@ -41,6 +41,10 @@ tms/
 │
 ├── 01_fetch_data.py             fetch M5/H1 OHLCV for US500 + correlated symbols
 ├── 01a_account_history.py       account health chart (equity / margin / P&L history)
+├── 01b_positions_chart.py       live position map on price chart + what-if scenarios
+├── 01c_ladder_calc.py           ladder safety calculator
+├── 01d_rollover_tax_calc.py     swap vs Belka tax scenario analysis
+├── 01e_tower_chart.py           position tower — vertical stack by entry price
 ├── 02_account.py                live account snapshot
 ├── 03_time_analysis.py          win-rate by UTC hour and day-of-week
 ├── 04_build_features.py         build 83-feature matrix → results/04_features_full.csv
