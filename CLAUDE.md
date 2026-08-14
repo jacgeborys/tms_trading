@@ -2,7 +2,7 @@
 
 ## What this project is
 
-Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 connected to OANDA live account** (account 62611585, server OANDATMS-MT5). Written in Python 3.8. **Current phase: buy-and-hold accumulation with ladder pending orders.** Power-hour research phase concluded (WR 56.4%, below 58.2% break-even) — archived.
+Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 connected to OANDA live account**. Written in Python 3.8. **Current phase: buy-and-hold accumulation with ladder pending orders.** Power-hour research phase concluded (WR 56.4%, below 58.2% break-even) — archived.
 
 ---
 
@@ -10,8 +10,8 @@ Algorithmic trading bot for **US500.pro** (S&P 500 CFD) via **MetaTrader 5 conne
 
 | Property | Value |
 |---|---|
-| Account | 62611585 on OANDATMS-MT5 |
-| Balance | ~15,900 PLN (live account) |
+| Account | *(redacted)* on OANDATMS-MT5 |
+| Balance | *(redacted — read live from MT5)* |
 | Instrument | US500.pro |
 | Contract size | 50 (1 lot = 50 × index price) |
 | Leverage | 20× |
