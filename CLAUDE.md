@@ -41,6 +41,9 @@ tms/
 ├── 01d_rollover_tax_calc.py    swap cost vs Belka tax scenario analysis (Sep + Dec rollovers)
 ├── 01e_tower_chart.py          position tower: vertical stack by entry price, top-heaviness score
 │
+├── ── MARKET ANALYSIS ────────────────────────────────────────────────
+├── 02_support_levels.py        support zone detection (swing lows + volume profile + round numbers)
+│
 ├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   symbol, leverage, magic number constants
 ├── mt5_client.py               connect() / disconnect() wrappers

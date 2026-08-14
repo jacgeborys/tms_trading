@@ -26,6 +26,8 @@ python 01b_positions_chart.py    # live position map + what-if equity at price d
 python 01c_ladder_calc.py        # ladder safety: margin level at each rung trigger
 python 01d_rollover_tax_calc.py  # swap cost vs tax scenario analysis
 python 01e_tower_chart.py        # position tower by entry price + top-heaviness score
+
+python 02_support_levels.py      # support zone detection for ladder placement
 ```
 
 ---
@@ -40,6 +42,7 @@ tms/
 ├── 01c_ladder_calc.py           ladder order safety calculator
 ├── 01d_rollover_tax_calc.py     rollover tax analysis
 ├── 01e_tower_chart.py           position tower visualization
+├── 02_support_levels.py         support zone detection (swing lows + volume profile)
 ├── config.py                    symbol, leverage, magic number constants
 ├── mt5_client.py                MT5 connect/disconnect wrappers
 ├── data.py                      candle and tick data helpers
