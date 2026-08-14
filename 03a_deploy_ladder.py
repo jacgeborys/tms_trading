@@ -265,9 +265,8 @@ def cascade_analysis(state, proposed, current_price):
     """
     For each price from current down to the lowest order, compute:
       - cumulative orders triggered and lots
-      - equity (existing positions + triggered orders)
-      - margin level
-      - spread cost to close all triggered orders
+      - equity with and without ladder orders
+      - margin level and margin required by ladder orders
     """
     if proposed.empty or state is None:
         return pd.DataFrame()
@@ -300,6 +299,7 @@ def cascade_analysis(state, proposed, current_price):
         # Existing positions P&L change
         upnl_existing = state["upnl_now"] + state["L"] * R * (P - current_price)
         margin_existing = max(state["margin"] * P / current_price, 1e-6)
+        equity_no_ladder = state["balance"] + upnl_existing
 
         # Triggered orders P&L and margin
         upnl_ladder = 0.0
@@ -308,22 +308,20 @@ def cascade_analysis(state, proposed, current_price):
             upnl_ladder += ov * R * (P - op)
             margin_ladder += ov * R * P / INSTR_LEVERAGE
 
-        equity = state["balance"] + upnl_existing + upnl_ladder
+        equity = equity_no_ladder + upnl_ladder
         total_margin = max(margin_existing + margin_ladder, 1e-6)
         ml = equity / total_margin * 100
 
-        # Spread cost = cost to close all triggered positions
-        spread_cost = cum_lots * SPREAD_PTS * R
-
         rows.append({
-            "price":        P,
-            "drop":         current_price - P,
-            "n_fired":      n_fired,
-            "cum_lots":     cum_lots,
-            "equity":       equity,
-            "margin_level": ml,
-            "spread_cost":  spread_cost,
-            "total_lots":   state["L"] + cum_lots,
+            "price":           P,
+            "drop":            current_price - P,
+            "n_fired":         n_fired,
+            "cum_lots":        cum_lots,
+            "equity":          equity,
+            "equity_no_ladder": equity_no_ladder,
+            "margin_level":    ml,
+            "margin_ladder":   margin_ladder,
+            "total_lots":      state["L"] + cum_lots,
         })
 
     return pd.DataFrame(rows)
@@ -332,19 +330,19 @@ def cascade_analysis(state, proposed, current_price):
 def print_cascade_summary(cascade, state, current_price):
     if cascade.empty:
         return
-    print(f"\n{'='*80}")
+    print(f"\n{'='*90}")
     print(f"  CASCADE ANALYSIS -- what happens as price drops through the ladder")
-    print(f"{'='*80}")
+    print(f"{'='*90}")
     print(f"  {'Price':>7}  {'Drop':>7}  {'Fired':>5}  {'Cum lots':>8}  "
-          f"{'Equity':>10}  {'ML%':>6}  {'Spread':>8}  {'Tot lots':>8}")
+          f"{'Eq (ladder)':>11}  {'Eq (no ldr)':>11}  {'ML%':>6}  "
+          f"{'Margin req':>10}")
     print(f"  {'-'*7}  {'-'*7}  {'-'*5}  {'-'*8}  "
-          f"{'-'*10}  {'-'*6}  {'-'*8}  {'-'*8}")
+          f"{'-'*11}  {'-'*11}  {'-'*6}  {'-'*10}")
 
     # Show a subset: every ~200 pts + key levels
     shown = set()
     for _, r in cascade.iterrows():
         drop = r["drop"]
-        # Show at key intervals: 0, first fire, every ~200 pts, margin warnings
         show = (drop == 0 or r["n_fired"] == 1
                 or int(drop) % 200 < 30
                 or r["margin_level"] < 200 and r["price"] not in shown
@@ -354,9 +352,10 @@ def print_cascade_summary(cascade, state, current_price):
             ml_sym = "+" if r["margin_level"] >= 200 else ("!" if r["margin_level"] >= 100 else "X")
             print(f"  {r['price']:>7,.0f}  {-r['drop']:>+7,.0f}  "
                   f"{r['n_fired']:>5.0f}  {r['cum_lots']:>8.3f}  "
-                  f"{r['equity']:>10,.0f}  {r['margin_level']:>5.0f}%{ml_sym}  "
-                  f"{r['spread_cost']:>8,.0f}  {r['total_lots']:>8.3f}")
-    print(f"{'='*80}")
+                  f"{r['equity']:>11,.0f}  {r['equity_no_ladder']:>11,.0f}  "
+                  f"{r['margin_level']:>5.0f}%{ml_sym}  "
+                  f"{r['margin_ladder']:>10,.0f}")
+    print(f"{'='*90}")
 
 
 def _ml_color(ml):
@@ -368,27 +367,27 @@ def _ml_color(ml):
 
 def plot_cascade(cascade, proposed, state, current_price):
     """
-    Left:  Pending order tower (volume per 25-pt price bin)
-    Right: Equity & margin level as price drops through the ladder
+    Left:   Pending order tower (volume per 25-pt price bin)
+    Center: Two equity curves -- with ladder vs without (existing only)
+    Right:  Cumulative lots triggered + cumulative margin required
     """
     plt.style.use("dark_background")
 
     fig = plt.figure(figsize=(22, 14))
-    gs = gridspec.GridSpec(1, 3, figure=fig, width_ratios=[1.2, 2, 1.2], wspace=0.35)
+    gs = gridspec.GridSpec(1, 3, figure=fig, width_ratios=[1.2, 2, 1.2], wspace=0.30)
     ax_tower = fig.add_subplot(gs[0])
     ax_eq    = fig.add_subplot(gs[1])
-    ax_ml    = ax_eq.twinx()
-    ax_cost  = fig.add_subplot(gs[2])
+    ax_right = fig.add_subplot(gs[2])
 
     total_lots = proposed["volume"].sum()
     n_orders = len(proposed)
-    bottom_ml = cascade["margin_level"].iloc[-1] if not cascade.empty else 0
+    max_margin = cascade["margin_ladder"].max() if not cascade.empty else 0
 
     fig.suptitle(
         f"Ladder Cascade -- US500.pro @ {current_price:,.1f}  |  "
         f"{n_orders} orders, {total_lots:.3f}L  |  "
         f"Equity {state['equity']:,.0f} {state['currency']}  |  "
-        f"ML at floor: {bottom_ml:.0f}%",
+        f"Max margin for ladder: {max_margin:,.0f} {state['currency']}",
         fontsize=11,
     )
 
@@ -436,92 +435,90 @@ def plot_cascade(cascade, proposed, state, current_price):
         y_hi = current_price + 30
         ax_tower.set_ylim(y_lo, y_hi)
 
-    # ── Center: Equity + Margin Level ──────────────────────────────────────
+    # ── Center: Two equity curves ─────────────────────────────────────────
     if not cascade.empty:
         prices = cascade["price"].values
-        equities = cascade["equity"].values
-        mls = cascade["margin_level"].values
+        eq_with = cascade["equity"].values
+        eq_without = cascade["equity_no_ladder"].values
 
-        # Equity line
-        ax_eq.fill_between(prices, equities, alpha=0.15, color="#5dade2", zorder=2)
-        ax_eq.plot(prices, equities, color="#5dade2", lw=2.0, zorder=3,
-                   label="Equity")
-        ax_eq.axhline(0, color="#ef5350", lw=1.0, ls="-", alpha=0.5)
+        # Equity without ladder (existing positions only) -- grey dashed
+        ax_eq.plot(prices, eq_without, color="#888888", lw=1.5, ls="--", zorder=3,
+                   label="Existing positions only")
 
-        # Annotate equity at key points
+        # Equity with ladder -- blue solid, shaded area between the two
+        ax_eq.plot(prices, eq_with, color="#5dade2", lw=2.0, zorder=4,
+                   label="With ladder orders")
+        ax_eq.fill_between(prices, eq_with, eq_without,
+                           where=(eq_with < eq_without),
+                           color="#ef5350", alpha=0.12, zorder=2,
+                           label="Ladder cost (loss from triggered orders)")
+        ax_eq.fill_between(prices, eq_with, eq_without,
+                           where=(eq_with >= eq_without),
+                           color="#26a69a", alpha=0.12, zorder=2)
+
+        ax_eq.axhline(0, color="#ef5350", lw=1.0, ls="-", alpha=0.5,
+                      label="Zero equity")
+        ax_eq.axhline(state["balance"], color="#ffd700", lw=0.8, ls=":", alpha=0.4,
+                      label=f"Balance ({state['balance']:,.0f})")
+
+        # Annotate equity values at key drops
+        last_annotated = current_price + 999
         for _, r in cascade.iterrows():
-            if int(r["drop"]) % 500 == 0 and r["drop"] > 0:
+            if r["drop"] > 0 and int(r["drop"]) % 500 == 0 and last_annotated - r["price"] > 100:
+                last_annotated = r["price"]
                 ax_eq.annotate(
                     f"{r['equity']:,.0f}",
                     xy=(r["price"], r["equity"]),
                     fontsize=7, color="#5dade2", ha="center", va="bottom",
                 )
+                ax_eq.annotate(
+                    f"{r['equity_no_ladder']:,.0f}",
+                    xy=(r["price"], r["equity_no_ladder"]),
+                    fontsize=7, color="#888888", ha="center", va="top",
+                )
 
         ax_eq.set_xlabel("US500.pro price level")
-        ax_eq.set_ylabel("Equity (PLN)", color="#5dade2")
-        ax_eq.tick_params(axis="y", labelcolor="#5dade2")
+        ax_eq.set_ylabel("Equity (PLN)")
         ax_eq.xaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
         ax_eq.yaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-        ax_eq.set_title("Equity & margin level as price drops through ladder")
+        ax_eq.set_title("Equity as price drops: with ladder vs without")
         ax_eq.grid(True, alpha=0.12)
         ax_eq.axvline(current_price, color="#ffffff", lw=0.8, ls=":", alpha=0.5)
-
-        # Invert x-axis so price drops left-to-right
         ax_eq.set_xlim(current_price + 20, prices.min() - 20)
+        ax_eq.legend(fontsize=7.5, loc="upper right")
 
-        # ML line on twin axis
-        for i in range(len(prices) - 1):
-            ax_ml.plot(prices[i:i+2], mls[i:i+2],
-                       color=_ml_color(mls[i+1]), lw=2.5, zorder=4)
-
-        ax_ml.axhline(100, color="#ef5350", lw=1.0, ls="--", alpha=0.7,
-                      label="Margin call (100%)")
-        ax_ml.axhline(200, color="#26a69a", lw=0.7, ls=":", alpha=0.5,
-                      label="Safe (200%)")
-        ax_ml.set_ylabel("Margin level (%)", color="#f08040")
-        ax_ml.tick_params(axis="y", labelcolor="#f08040")
-        ax_ml.yaxis.set_major_formatter(
-            mticker.FuncFormatter(lambda x, _: f"{x:.0f}%"))
-        ax_ml.set_ylim(bottom=0)
-
-        # Combined legend
-        lines1, labels1 = ax_eq.get_legend_handles_labels()
-        lines2, labels2 = ax_ml.get_legend_handles_labels()
-        ax_eq.legend(lines1 + lines2, labels1 + labels2,
-                     fontsize=7.5, loc="upper right")
-
-    # ── Right: Cumulative lots + spread cost ───────────────────────────────
+    # ── Right: Cumulative lots + margin required ──────────────────────────
     if not cascade.empty:
-        ax_cost.plot(cascade["cum_lots"], cascade["price"],
-                     color="#00e676", lw=2.0, label="Cum. lots triggered")
-        ax_cost.fill_betweenx(cascade["price"], 0, cascade["cum_lots"],
-                              color="#00e676", alpha=0.15)
+        ax_right.plot(cascade["cum_lots"], cascade["price"],
+                      color="#00e676", lw=2.0, label="Cum. lots triggered")
+        ax_right.fill_betweenx(cascade["price"], 0, cascade["cum_lots"],
+                               color="#00e676", alpha=0.15)
 
-        ax_cost2 = ax_cost.twiny()
-        ax_cost2.plot(cascade["spread_cost"], cascade["price"],
-                      color="#ffd700", lw=1.5, ls="--", label="Spread cost (PLN)")
+        ax_margin = ax_right.twiny()
+        ax_margin.plot(cascade["margin_ladder"], cascade["price"],
+                       color="#ffd700", lw=1.5, ls="--", label="Margin required (PLN)")
+        ax_margin.fill_betweenx(cascade["price"], 0, cascade["margin_ladder"],
+                                color="#ffd700", alpha=0.08)
 
-        ax_cost.set_xlabel("Cumulative lots", color="#00e676")
-        ax_cost.tick_params(axis="x", labelcolor="#00e676")
-        ax_cost2.set_xlabel("Spread cost (PLN)", color="#ffd700")
-        ax_cost2.tick_params(axis="x", labelcolor="#ffd700")
+        ax_right.set_xlabel("Cumulative lots", color="#00e676")
+        ax_right.tick_params(axis="x", labelcolor="#00e676")
+        ax_margin.set_xlabel("Margin required (PLN)", color="#ffd700")
+        ax_margin.tick_params(axis="x", labelcolor="#ffd700")
 
-        ax_cost.set_ylabel("Price level")
-        ax_cost.set_title("Lots triggered &\nspread cost")
-        ax_cost.yaxis.set_major_formatter(
+        ax_right.set_ylabel("Price level")
+        ax_right.set_title("Lots triggered &\nmargin required")
+        ax_right.yaxis.set_major_formatter(
             mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
-        ax_cost.grid(True, alpha=0.12, axis="y")
-        ax_cost.axhline(current_price, color="#ffffff", lw=0.8, ls=":", alpha=0.5)
+        ax_right.grid(True, alpha=0.12, axis="y")
+        ax_right.axhline(current_price, color="#ffffff", lw=0.8, ls=":", alpha=0.5)
+        ax_right.set_ylim(cascade["price"].min() - 30, current_price + 30)
 
-        if not cascade.empty:
-            ax_cost.set_ylim(cascade["price"].min() - 30, current_price + 30)
-
-        lines_a, labels_a = ax_cost.get_legend_handles_labels()
-        lines_b, labels_b = ax_cost2.get_legend_handles_labels()
-        ax_cost.legend(lines_a + lines_b, labels_a + labels_b,
-                       fontsize=7, loc="lower left")
+        lines_a, labels_a = ax_right.get_legend_handles_labels()
+        lines_b, labels_b = ax_margin.get_legend_handles_labels()
+        ax_right.legend(lines_a + lines_b, labels_a + labels_b,
+                        fontsize=7, loc="lower left")
 
     import warnings
     with warnings.catch_warnings():
