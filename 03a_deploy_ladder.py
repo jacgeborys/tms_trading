@@ -502,6 +502,15 @@ def plot_cascade(cascade, proposed, state, current_price):
         ax_margin.fill_betweenx(cascade["price"], 0, cascade["margin_ladder"],
                                 color="#ffd700", alpha=0.08)
 
+        # Lock margin axis proportional to lots axis so divergence
+        # honestly reflects the price effect on margin cost.
+        # At current price, 1 lot costs R * P / leverage in margin.
+        R = state["R"]
+        margin_per_lot = R * current_price / INSTR_LEVERAGE
+        max_lots = cascade["cum_lots"].max()
+        ax_right.set_xlim(0, max_lots * 1.15)
+        ax_margin.set_xlim(0, max_lots * 1.15 * margin_per_lot)
+
         ax_right.set_xlabel("Cumulative lots", color="#00e676")
         ax_right.tick_params(axis="x", labelcolor="#00e676")
         ax_margin.set_xlabel("Margin required (PLN)", color="#ffd700")
