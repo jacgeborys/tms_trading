@@ -44,6 +44,11 @@ tms/
 ├── ── MARKET ANALYSIS ────────────────────────────────────────────────
 ├── 02_support_levels.py        support zone detection (swing lows + volume profile + round numbers)
 │
+├── ── ORDER MANAGEMENT ──────────────────────────────────────────────
+├── 03_manage_orders.py         place / cancel / list individual pending orders
+├── 03a_deploy_ladder.py        batch deploy proposed ladder (diff-based, dry-run default)
+├── import_02.py                import shim for 02_support_levels (digit-prefixed module)
+│
 ├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   symbol, leverage, magic number constants
 ├── mt5_client.py               connect() / disconnect() wrappers
@@ -54,7 +59,8 @@ tms/
 │   ├── US100_pro_M5.pkl
 │   ├── US30_pro_M5.pkl
 │   ├── GOLD_pro_M5.pkl
-│   └── rollover_ledger.csv     persistent per-rollover cost history (written by 01a)
+│   ├── rollover_ledger.csv     persistent per-rollover cost history (written by 01a)
+│   └── ladder_deployed.csv    audit trail of last deployed ladder (written by 03a)
 │
 └── archive/                    ── POWER-HOUR RESEARCH PHASE (concluded, WR < break-even) ──
     ├── 02_account.py           (superseded by 01a)
@@ -152,13 +158,20 @@ python 01b_positions_chart.py
 
 # Ladder safety check: margin level at each rung trigger
 python 01c_ladder_calc.py
+
+# Market analysis + ladder proposal
+python 02_support_levels.py
+
+# Deploy ladder (dry-run first, then --execute)
+python 03a_deploy_ladder.py
+python 03a_deploy_ladder.py --execute
 ```
 
 ---
 
 ## Still to build
 
-- `orders.py` — place/close market and pending orders via MT5 (for rollover close-reopen automation: market sell all, then market buy same volume at session reopen)
+- Rollover close-reopen automation: market sell all before 22:55 Polish time, market buy same volume at session reopen (Sep 16, 2026)
 - Rollover alert: notify on rollover day (Sep 16) that positions must be closed by 22:55 Polish time
 
 ---

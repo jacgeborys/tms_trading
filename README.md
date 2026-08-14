@@ -28,6 +28,9 @@ python 01d_rollover_tax_calc.py  # swap cost vs tax scenario analysis
 python 01e_tower_chart.py        # position tower by entry price + top-heaviness score
 
 python 02_support_levels.py      # support zone detection for ladder placement
+
+python 03_manage_orders.py list  # list / place / cancel individual pending orders
+python 03a_deploy_ladder.py      # deploy proposed ladder (dry-run by default, --execute to apply)
 ```
 
 ---
@@ -43,6 +46,9 @@ tms/
 ├── 01d_rollover_tax_calc.py     rollover tax analysis
 ├── 01e_tower_chart.py           position tower visualization
 ├── 02_support_levels.py         support zone detection (swing lows + volume profile)
+├── 03_manage_orders.py          place / cancel / list individual pending orders
+├── 03a_deploy_ladder.py         batch deploy proposed ladder (diff-based, dry-run default)
+├── import_02.py                 import shim for 02_support_levels (digit-prefixed module)
 ├── config.py                    symbol, leverage, magic number constants
 ├── mt5_client.py                MT5 connect/disconnect wrappers
 ├── data.py                      candle and tick data helpers
