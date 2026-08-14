@@ -12,10 +12,11 @@ Then proposes a buy-limit ladder where:
   - At support zones, extra 0.001L orders cluster radially (stronger = more rungs)
   - Deeper supports get slightly more extra orders (the lower the thicker)
   - All orders are 0.001L -- density varies, not lot size
+  - Grid snaps to round multiples (stable across runs regardless of current price)
 
 Produces two charts:
-  Chart 1 -- Market analysis: D1 candles + support zones + proposed ladder
-  Chart 2 -- Comparison: current pending orders vs proposed ladder
+  Chart 1 -- Pure market analysis: D1 candles + support zones + volume profile
+  Chart 2 -- Proposed vs current: ladders overlaid + smoothed density profile
 
 Usage:
   python 02_support_levels.py                         # defaults
@@ -25,8 +26,8 @@ Usage:
   python 02_support_levels.py --floor 6300            # lowest price to cover
 
 Outputs:
-  results/charts/02_support_levels.png        (market analysis + proposed ladder)
-  results/charts/02_support_comparison.png    (current vs proposed)
+  results/charts/02_support_levels.png        (pure market analysis)
+  results/charts/02_support_comparison.png    (current vs proposed + density)
   results/02_support_levels.csv               (zone list)
   results/02_proposed_ladder.csv              (order-by-order proposal)
 """
@@ -122,32 +123,25 @@ def find_swing_lows(df: pd.DataFrame, window: int = 10) -> pd.DataFrame:
 
 def find_broken_resistance(df: pd.DataFrame, window: int = 15,
                            min_break_bars: int = 20) -> pd.DataFrame:
-    """
-    Find swing highs that were later decisively broken upward.
-    These former resistance levels become psychological support.
-    """
     highs = df["high"].values
     closes = df["close"].values
     n = len(highs)
     broken = []
-
     for i in range(window, n - window):
         hi = highs[i]
         neighborhood = highs[max(0, i - window):i + window + 1]
         if hi != neighborhood.max():
             continue
-        # Check if price later closed above this level for several bars
         future = closes[i + window:]
         if len(future) < min_break_bars:
             continue
         bars_above = (future > hi).sum()
         if bars_above >= min_break_bars:
             broken.append({
-                "time":   df["time"].iloc[i],
-                "price":  hi,
+                "time":       df["time"].iloc[i],
+                "price":      hi,
                 "bars_above": int(bars_above),
             })
-
     return pd.DataFrame(broken) if broken else pd.DataFrame()
 
 
@@ -211,7 +205,7 @@ def detect_supports(h1: pd.DataFrame, current_price: float,
             swing_prices.append(s["price"])
             swing_scores.append(s["bounce"] * recency)
 
-    # 2. Broken resistance (former resistance = new support)
+    # 2. Broken resistance
     broken = find_broken_resistance(h1, window=15, min_break_bars=20)
     broken_prices, broken_scores = [], []
     if not broken.empty:
@@ -219,7 +213,6 @@ def detect_supports(h1: pd.DataFrame, current_price: float,
         for _, b in broken.iterrows():
             age_days = (now - b["time"]).total_seconds() / 86400
             recency = max(0.1, 1.0 / (1.0 + age_days / 120))
-            # Score by how decisively the level was broken
             broken_prices.append(b["price"])
             broken_scores.append(b["bars_above"] * recency * 0.5)
 
@@ -260,77 +253,93 @@ def propose_ladder(zones: pd.DataFrame, current_price: float,
                    n_zones: int, grid_step: float, cluster_step: float,
                    floor: float) -> pd.DataFrame:
     """
-    Build a two-layer ladder of 0.001L orders:
+    Build a two-layer ladder of 0.001L orders.
 
-    Layer 1 — Background grid:
-      One 0.001L order every grid_step pts from (current_price - grid_step)
-      down to floor. Catches sideways drift and small pullbacks.
+    Layer 1 -- Background grid:
+      0.001L at every round multiple of grid_step, from just below current
+      price down to floor. Prices snap to round values (e.g. 7800, 7775, 7750)
+      so the grid is stable across runs regardless of where the bid is.
 
-    Layer 2 — Support clusters:
-      At each of the top n_zones supports, add extra 0.001L orders
-      distributed radially around the zone center with cluster_step spacing.
-      Stronger zones get wider clusters (more rungs).
-      Deeper zones get a small bonus in cluster width.
-
-    All orders are 0.001L. The "thickness" of a support zone comes
-    from having more orders clustered around it, not bigger lots.
+    Layer 2 -- Support clusters:
+      Extra 0.001L orders at integer prices around each zone center.
+      Stronger/deeper zones get wider clusters.
     """
     top = zones.head(n_zones).copy()
     max_score = top["score"].max() if not top.empty else 1
     max_dist = top["dist_pts"].max() if not top.empty else 1
 
-    # Layer 1: background grid
-    grid_prices = np.arange(
-        round(current_price - grid_step, 1),
-        floor - 0.1,
-        -grid_step,
-    )
-    rungs = {}  # price -> {"volume", "source"}
+    # Layer 1: background grid -- snap to round multiples of grid_step
+    # e.g. grid_step=25 -> 7800, 7775, 7750, ...
+    grid_top = int(current_price // grid_step) * grid_step  # highest round below price
+    grid_prices = np.arange(grid_top, floor - 0.1, -grid_step)
+
+    rungs = {}  # price -> info dict
     for p in grid_prices:
-        p = round(p, 1)
+        p = float(p)
         rungs[p] = {"volume": LOT, "source": "grid", "zone_rank": 0,
                     "zone_center": 0.0, "zone_score": 0.0}
 
-    # Layer 2: support clusters
+    # Layer 2: support clusters -- snap to integer prices
     for rank, (_, z) in enumerate(top.iterrows()):
-        center = z["zone_center"]
-        score_norm = z["score"] / max_score        # 0..1
-        depth_norm = z["dist_pts"] / max_dist      # 0..1
+        center = round(z["zone_center"])  # snap to integer
+        score_norm = z["score"] / max_score
+        depth_norm = z["dist_pts"] / max_dist
 
         # Cluster half-width: 1..5 rungs on each side
-        # Stronger supports and deeper supports get wider clusters
         half_n = int(round(1 + 3 * score_norm + 1 * depth_norm))
         half_n = min(half_n, 5)
 
         for k in range(-half_n, half_n + 1):
-            p = round(center + k * cluster_step, 1)
+            p = float(center + k * int(cluster_step))
             if p >= current_price or p < floor:
                 continue
             if p in rungs:
-                # Stack: add another 0.001L on top of existing order
                 rungs[p]["volume"] = round(rungs[p]["volume"] + LOT, 3)
                 if rungs[p]["source"] == "grid":
                     rungs[p]["source"] = "grid+support"
-                # Keep the best zone info
                 if z["score"] > rungs[p]["zone_score"]:
                     rungs[p]["zone_rank"] = rank + 1
-                    rungs[p]["zone_center"] = round(center, 1)
+                    rungs[p]["zone_center"] = center
                     rungs[p]["zone_score"] = round(z["score"], 1)
             else:
                 rungs[p] = {
                     "volume":      LOT,
                     "source":      "support",
                     "zone_rank":   rank + 1,
-                    "zone_center": round(center, 1),
+                    "zone_center": center,
                     "zone_score":  round(z["score"], 1),
                 }
 
-    # Convert to DataFrame
     rows = []
     for price, info in sorted(rungs.items()):
         rows.append({"price": price, **info})
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+# ── Ladder density profile ────────────────────────────────────────────────────
+
+def ladder_density(ladder: pd.DataFrame, y_lo: float, y_hi: float,
+                   bin_width: float = 5.0, smooth_sigma: float = 3.0):
+    """
+    Build a smoothed density curve of the proposed ladder.
+    Returns (price_axis, density) arrays for plotting as a filled curve.
+    """
+    bins = np.arange(y_lo, y_hi + bin_width, bin_width)
+    counts = np.zeros(len(bins))
+
+    for _, r in ladder.iterrows():
+        idx = np.argmin(np.abs(bins - r["price"]))
+        counts[idx] += r["volume"]
+
+    # Gaussian smoothing via convolution
+    kernel_size = int(smooth_sigma * 4) * 2 + 1
+    x = np.arange(kernel_size) - kernel_size // 2
+    kernel = np.exp(-0.5 * (x / smooth_sigma) ** 2)
+    kernel /= kernel.sum()
+    smoothed = np.convolve(counts, kernel, mode="same")
+
+    return bins, smoothed
 
 
 # ── Charting helpers ──────────────────────────────────────────────────────────
@@ -392,9 +401,9 @@ def _price_ylim(zones, pending, ladder, current_price, d1):
     return min(candidates) - 30, current_price + 50
 
 
-# ── Chart 1: Market analysis + proposed ladder ────────────────────────────────
+# ── Chart 1: Pure market analysis ─────────────────────────────────────────────
 
-def plot_market(zones, d1, vp, ladder, current_price) -> plt.Figure:
+def plot_market(zones, d1, vp, current_price) -> plt.Figure:
     plt.style.use("dark_background")
 
     fig = plt.figure(figsize=(22, 16))
@@ -405,15 +414,10 @@ def plot_market(zones, d1, vp, ladder, current_price) -> plt.Figure:
     ax_vp    = fig.add_subplot(gs[0, 1], sharey=ax_price)
     ax_table = fig.add_subplot(gs[1, :])
 
-    n_grid    = len(ladder[ladder["source"].str.contains("grid")]) if not ladder.empty else 0
-    n_support = len(ladder[ladder["source"].str.contains("support")]) if not ladder.empty else 0
-    total_lots = ladder["volume"].sum() if not ladder.empty else 0
     fig.suptitle(
-        f"Market Analysis + Proposed Ladder -- US500.pro @ {current_price:,.1f}  |  "
-        f"{len(zones)} support zones  |  "
-        f"Proposed: {len(ladder)} orders, {total_lots:.3f} lots  "
-        f"(grid: {n_grid}, support-boosted: {n_support})",
-        fontsize=10,
+        f"Market Analysis -- US500.pro @ {current_price:,.1f}  |  "
+        f"{len(zones)} support zones detected",
+        fontsize=11,
     )
 
     # ── Price chart ───────────────────────────────────────────────────────────
@@ -422,10 +426,7 @@ def plot_market(zones, d1, vp, ladder, current_price) -> plt.Figure:
 
     ax_price.axhline(current_price, color="#ffffff", lw=1.0, ls=":",
                      alpha=0.7, zorder=4, label=f"Current {current_price:,.0f}")
-
     _draw_support_zones(ax_price, zones, n)
-    _draw_ladder_markers(ax_price, ladder, n,
-                         color="#00e676", label=f"Proposed ({total_lots:.3f}L)")
 
     step = max(1, n // 12)
     idxs = list(range(0, n, step))
@@ -434,10 +435,12 @@ def plot_market(zones, d1, vp, ladder, current_price) -> plt.Figure:
     ax_price.set_xticklabels(labels, fontsize=7.5)
     ax_price.set_xlim(-1, n + 8)
 
-    y_lo, y_hi = _price_ylim(zones, pd.DataFrame(), ladder, current_price, d1)
+    y_lo = min(zones["zone_lo"].min() if not zones.empty else current_price * 0.85,
+               d1["low"].min()) - 30
+    y_hi = current_price + 50
     ax_price.set_ylim(y_lo, y_hi)
     ax_price.set_ylabel("US500.pro")
-    ax_price.set_title(f"D1 price chart with support zones + proposed ladder  ({n} bars)")
+    ax_price.set_title(f"D1 price chart with support zones  ({n} bars)")
     ax_price.yaxis.set_major_formatter(
         mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
     ax_price.legend(fontsize=7.5, loc="lower right")
@@ -450,111 +453,71 @@ def plot_market(zones, d1, vp, ladder, current_price) -> plt.Figure:
                height=(vp_vis["price_mid"].diff().median() or 5) * 0.9,
                color=bar_colors, alpha=0.7)
     ax_vp.set_xlabel("Volume", fontsize=8)
-    ax_vp.set_title("Volume profile", fontsize=9)
+    ax_vp.set_title("Volume profile (H1)", fontsize=9)
     ax_vp.tick_params(labelleft=False)
     ax_vp.grid(True, alpha=0.12, axis="x")
 
-    # ── Proposed ladder table ─────────────────────────────────────────────────
+    # ── Support table ─────────────────────────────────────────────────────────
     ax_table.axis("off")
-
-    if ladder.empty:
-        ax_table.text(0.5, 0.5, "No ladder proposed",
-                      ha="center", va="center", fontsize=14, color="#888888")
-    else:
-        # Show support-boosted zones (group by zone)
-        support_rungs = ladder[ladder["zone_rank"] > 0].copy()
-        if not support_rungs.empty:
-            by_zone = (support_rungs.groupby("zone_rank")
-                       .agg({"price": ["min", "max", "count"],
-                             "volume": "sum",
-                             "zone_center": "first",
-                             "zone_score": "first"})
-                       .reset_index())
-            by_zone.columns = ["rank", "price_lo", "price_hi", "n_rungs",
-                               "total_lots", "center", "score"]
-            by_zone["dist"] = current_price - by_zone["center"]
-            by_zone = by_zone.sort_values("dist")
-
-            # Add grid-only summary row
-            grid_only = ladder[ladder["source"] == "grid"]
-            n_grid_only = len(grid_only)
-
-            col_labels = ["Zone", "Center", "Score", "Dist (pts)", "Dist (%)",
-                          "Cluster rungs", "Price range", "Total lots"]
-            table_data = []
-            for _, bz in by_zone.iterrows():
-                table_data.append([
-                    f"S{bz['rank']:.0f}",
-                    f"{bz['center']:,.1f}",
-                    f"{bz['score']:.0f}",
-                    f"-{bz['dist']:,.0f}",
-                    f"-{bz['dist'] / current_price * 100:.1f}%",
-                    f"{bz['n_rungs']:.0f}",
-                    f"{bz['price_lo']:,.1f} - {bz['price_hi']:,.1f}",
-                    f"{bz['total_lots']:.3f}",
-                ])
-            # Append grid summary
+    top = zones.head(20).copy()
+    if not top.empty:
+        col_labels = ["Rank", "Support", "Zone range", "Dist (pts)",
+                      "Dist (%)", "Touches", "Score"]
+        table_data = []
+        for rank, (_, z) in enumerate(top.iterrows()):
             table_data.append([
-                "Grid",
-                f"every {ladder['price'].diff().dropna().mode().iloc[0]:.0f}pts"
-                if len(ladder) > 1 else "--",
-                "--",
-                f"{current_price - ladder['price'].min():,.0f}",
-                "--",
-                f"{n_grid_only}",
-                f"{ladder['price'].min():,.1f} - {ladder['price'].max():,.1f}",
-                f"{grid_only['volume'].sum():.3f}",
+                f"S{rank+1}",
+                f"{z['zone_center']:,.1f}",
+                f"{z['zone_lo']:,.0f} - {z['zone_hi']:,.0f}",
+                f"-{z['dist_pts']:,.0f}",
+                f"-{z['dist_pct']:.1f}%",
+                f"{z['n_touches']:.0f}",
+                f"{z['score']:.0f}",
             ])
-
-            table = ax_table.table(
-                cellText=table_data, colLabels=col_labels,
-                loc="center", cellLoc="center",
-            )
-            table.auto_set_font_size(False)
-            table.set_fontsize(8)
-            table.scale(1.0, 1.3)
-            for j in range(len(col_labels)):
-                table[0, j].set_facecolor("#333333")
-                table[0, j].set_text_props(color="#ffffff", fontweight="bold")
-            for i in range(len(table_data)):
-                is_grid_row = (i == len(table_data) - 1)
-                for j in range(len(col_labels)):
-                    cell = table[i + 1, j]
-                    if is_grid_row:
-                        cell.set_facecolor("#1a1a3e")
-                        cell.set_text_props(color="#8888cc")
-                    else:
-                        lots = by_zone.iloc[i]["total_lots"]
-                        max_lots = by_zone["total_lots"].max()
-                        g = int(30 + 40 * (lots / max_lots))
-                        cell.set_facecolor(f"#{26:02x}{g:02x}{26:02x}")
-                        cell.set_text_props(color="#dddddd")
-
-        ax_table.set_title(
-            "Proposed ladder by zone  (all orders 0.001L -- "
-            "thickness = more orders stacked at supports, "
-            "last row = background grid)", fontsize=9, pad=15,
+        table = ax_table.table(
+            cellText=table_data, colLabels=col_labels,
+            loc="center", cellLoc="center",
         )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+        table.scale(1.0, 1.3)
+        max_score = top["score"].max()
+        for j in range(len(col_labels)):
+            table[0, j].set_facecolor("#333333")
+            table[0, j].set_text_props(color="#ffffff", fontweight="bold")
+        for i in range(len(table_data)):
+            intensity = top.iloc[i]["score"] / max_score
+            r_val = int(26 + 20 * intensity)
+            for j in range(len(col_labels)):
+                table[i + 1, j].set_facecolor(f"#{r_val:02x}{26:02x}{26:02x}")
+                table[i + 1, j].set_text_props(color="#dddddd")
+        ax_table.set_title("Top 20 support zones  (brighter = stronger score)",
+                           fontsize=9, pad=15)
 
     return fig
 
 
-# ── Chart 2: Current pending vs proposed ──────────────────────────────────────
+# ── Chart 2: Current pending vs proposed + density ────────────────────────────
 
 def plot_comparison(zones, d1, pending, ladder, current_price) -> plt.Figure:
     plt.style.use("dark_background")
 
-    fig = plt.figure(figsize=(22, 14))
-    gs = gridspec.GridSpec(2, 1, figure=fig, height_ratios=[3, 2], hspace=0.30)
-    ax_price = fig.add_subplot(gs[0])
-    ax_dist  = fig.add_subplot(gs[1])
+    fig = plt.figure(figsize=(22, 16))
+    gs = gridspec.GridSpec(2, 2, figure=fig,
+                           height_ratios=[3, 2], width_ratios=[3, 1],
+                           hspace=0.30, wspace=0.08)
+    ax_price = fig.add_subplot(gs[0, 0])
+    ax_dens  = fig.add_subplot(gs[0, 1], sharey=ax_price)
+    ax_dist  = fig.add_subplot(gs[1, :])
 
     pend_lots = pending["volume"].sum() if not pending.empty else 0
     prop_lots = ladder["volume"].sum() if not ladder.empty else 0
+    n_orders  = len(ladder) if not ladder.empty else 0
+
     fig.suptitle(
         f"Current vs Proposed Ladder -- US500.pro @ {current_price:,.1f}  |  "
         f"Current: {len(pending)} orders, {pend_lots:.3f}L  |  "
-        f"Proposed: {len(ladder)} orders, {prop_lots:.3f}L",
+        f"Proposed: {n_orders} orders, {prop_lots:.3f}L",
         fontsize=11,
     )
 
@@ -590,16 +553,36 @@ def plot_comparison(zones, d1, pending, ladder, current_price) -> plt.Figure:
     ax_price.legend(fontsize=8, loc="lower right")
     ax_price.grid(True, alpha=0.12)
 
+    # ── Density sidebar ───────────────────────────────────────────────────────
+    if not ladder.empty:
+        dens_prices, dens_smooth = ladder_density(ladder, y_lo, y_hi)
+        ax_dens.fill_betweenx(dens_prices, 0, dens_smooth,
+                              color="#00e676", alpha=0.4, zorder=2)
+        ax_dens.plot(dens_smooth, dens_prices,
+                     color="#00e676", lw=1.2, alpha=0.8, zorder=3)
+
+    if not pending.empty:
+        pend_prices, pend_smooth = ladder_density(pending, y_lo, y_hi)
+        ax_dens.fill_betweenx(pend_prices, 0, pend_smooth,
+                              color="#40c0f0", alpha=0.25, zorder=1)
+        ax_dens.plot(pend_smooth, pend_prices,
+                     color="#40c0f0", lw=1.0, alpha=0.6, zorder=2,
+                     ls="--")
+
+    ax_dens.set_xlabel("Density (lots)", fontsize=8)
+    ax_dens.set_title("Order density", fontsize=9)
+    ax_dens.tick_params(labelleft=False)
+    ax_dens.grid(True, alpha=0.12, axis="x")
+
     # ── Panel 2: Volume distribution by price ─────────────────────────────────
     bin_step = 25.0
     price_lo = min(
         pending["price"].min() if not pending.empty else current_price,
         ladder["price"].min() if not ladder.empty else current_price,
     )
-    price_hi = current_price
     bins = np.arange(
         (price_lo // bin_step) * bin_step,
-        price_hi + bin_step,
+        current_price + bin_step,
         bin_step,
     )
 
@@ -689,8 +672,8 @@ def print_ladder_summary(ladder, current_price):
     for _, r in ladder.iterrows():
         dist = current_price - r["price"]
         zone_s = f"S{r['zone_rank']:.0f}" if r["zone_rank"] > 0 else "--"
-        center_s = f"{r['zone_center']:,.1f}" if r["zone_rank"] > 0 else ""
-        print(f"  {r['price']:>8,.1f}  {r['volume']:>6.3f}  "
+        center_s = f"{r['zone_center']:,.0f}" if r["zone_rank"] > 0 else ""
+        print(f"  {r['price']:>8,.1f}  {r['volume']:>6.003f}  "
               f"{-dist:>+8,.0f}  {r['source']:>14}  "
               f"{zone_s:>6}  {center_s:>12}")
     print(f"{'='*75}")
@@ -774,16 +757,16 @@ def main():
         print_zone_summary(zones, pending, current_price)
         print_ladder_summary(ladder, current_price)
 
-        # Volume profile
+        # Volume profile for chart 1
         vp = volume_profile(h1, n_bins=300,
                             price_lo=current_price * 0.85,
                             price_hi=current_price)
 
-        # Chart 1: Market analysis + proposed ladder
-        fig1 = plot_market(zones, d1, vp, ladder, current_price)
+        # Chart 1: Pure market analysis
+        fig1 = plot_market(zones, d1, vp, current_price)
         _save_chart(fig1, "02_support_levels")
 
-        # Chart 2: Current vs proposed
+        # Chart 2: Current vs proposed + density
         fig2 = plot_comparison(zones, d1, pending, ladder, current_price)
         _save_chart(fig2, "02_support_comparison")
 
