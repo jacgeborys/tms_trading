@@ -37,7 +37,6 @@ tms/
 ├── 01_fetch_data.py            fetch M5/H1 OHLCV for US500 + correlated instruments
 ├── 01a_account_history.py      equity curve, rollover model, margin chart (main daily script)
 ├── 01b_positions_chart.py      live position map + what-if equity at price drop scenarios
-├── 01c_ladder_calc.py          ladder safety calculator: ML% at each rung trigger depth
 ├── 01d_rollover_tax_calc.py    swap cost vs Belka tax scenario analysis (Sep + Dec rollovers)
 ├── 01e_tower_chart.py          position tower: vertical stack by entry price, top-heaviness score
 │
@@ -93,7 +92,7 @@ Holding a large long position in US500.pro built up via buy-limit ladder orders.
 1. `python 01_fetch_data.py` — refresh OHLCV if >12h old
 2. `python 01a_account_history.py` — equity curve, rollover costs, margin level chart
 3. `python 01b_positions_chart.py` — check current position map + what-if scenarios
-4. `python 01c_ladder_calc.py` — verify ladder spacing leaves safe ML%
+4. `python 03a_deploy_ladder.py` — review ladder cascade (dry-run), deploy with `--execute`
 
 **Next rollover: September 16, 2026** — close all positions before daily break, reopen when trading resumes. Saves ~42× vs paying the rollover (~12.5 PLN/0.001 lot vs ~0.26 PLN spread). See **Rollover execution plan** below for exact timing.
 
@@ -156,13 +155,11 @@ python 01a_account_history.py
 # Live position map + what-if equity drop scenarios
 python 01b_positions_chart.py
 
-# Ladder safety check: margin level at each rung trigger
-python 01c_ladder_calc.py
-
 # Market analysis + ladder proposal
 python 02_support_levels.py
 
 # Deploy ladder (dry-run first, then --execute)
+# Includes cascade chart: equity/ML/margin as price drops through ladder
 python 03a_deploy_ladder.py
 python 03a_deploy_ladder.py --execute
 ```

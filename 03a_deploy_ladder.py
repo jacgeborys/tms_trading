@@ -563,8 +563,8 @@ def main():
                         help="Zone merge width (default 20 pts)")
     parser.add_argument("--n-zones", type=int, default=12,
                         help="Number of top zones for clusters (default 12)")
-    parser.add_argument("--grid-step", type=float, default=25.0,
-                        help="Background grid spacing (default 25 pts)")
+    parser.add_argument("--grid-step", type=float, default=20.0,
+                        help="Background grid spacing (default 20 pts)")
     parser.add_argument("--cluster-step", type=float, default=5.0,
                         help="Cluster rung spacing (default 5 pts)")
     parser.add_argument("--floor", type=float, default=6300.0,

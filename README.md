@@ -23,7 +23,6 @@ Current strategy: **buy-and-hold accumulation** with ladder pending orders. Rese
 python 01_fetch_data.py          # refresh M5/H1 price data (auto-skips if <12h old)
 python 01a_account_history.py    # equity curve, rollover costs, margin chart
 python 01b_positions_chart.py    # live position map + what-if equity at price drops
-python 01c_ladder_calc.py        # ladder safety: margin level at each rung trigger
 python 01d_rollover_tax_calc.py  # swap cost vs tax scenario analysis
 python 01e_tower_chart.py        # position tower by entry price + top-heaviness score
 
@@ -42,7 +41,6 @@ tms/
 ├── 01_fetch_data.py             fetch OHLCV for US500 + correlated instruments
 ├── 01a_account_history.py       account dashboard (equity / margin / P&L)
 ├── 01b_positions_chart.py       position map + stress-test scenarios
-├── 01c_ladder_calc.py           ladder order safety calculator
 ├── 01d_rollover_tax_calc.py     rollover tax analysis
 ├── 01e_tower_chart.py           position tower visualization
 ├── 02_support_levels.py         support zone detection (swing lows + volume profile)

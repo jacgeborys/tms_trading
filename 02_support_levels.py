@@ -20,7 +20,7 @@ Usage:
   python 02_support_levels.py                         # defaults
   python 02_support_levels.py --days 250              # ~1 year of D1
   python 02_support_levels.py --n-zones 15            # more zones to cover
-  python 02_support_levels.py --grid-step 25          # background grid spacing
+  python 02_support_levels.py --grid-step 25          # wider grid spacing
   python 02_support_levels.py --floor 6300            # lowest price to cover
 
 Outputs:
@@ -630,8 +630,8 @@ def main():
                         help="Max width to merge nearby supports (default 20 pts)")
     parser.add_argument("--n-zones", type=int, default=12,
                         help="Number of top zones to place extra orders at (default 12)")
-    parser.add_argument("--grid-step", type=float, default=25.0,
-                        help="Background grid spacing in pts (default 25)")
+    parser.add_argument("--grid-step", type=float, default=20.0,
+                        help="Background grid spacing in pts (default 20)")
     parser.add_argument("--cluster-step", type=float, default=5.0,
                         help="Spacing between rungs within a support cluster (default 5)")
     parser.add_argument("--floor", type=float, default=6300.0,
