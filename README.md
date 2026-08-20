@@ -30,6 +30,9 @@ python 02_support_levels.py      # support zone detection for ladder placement
 
 python 03_manage_orders.py list  # list / place / cancel individual pending orders
 python 03a_deploy_ladder.py      # deploy proposed ladder (dry-run by default, --execute to apply)
+
+python 04_rollover_close.py      # close all positions before rollover (dry-run default)
+python 04a_rollover_reopen.py --price 7899 --lots 0.260  # reopen via buy-limits
 ```
 
 ---
@@ -47,6 +50,8 @@ tms/
 ├── 03_manage_orders.py          place / cancel / list individual pending orders
 ├── 03a_deploy_ladder.py         batch deploy proposed ladder (diff-based, dry-run default)
 ├── import_02.py                 import shim for 02_support_levels (digit-prefixed module)
+├── 04_rollover_close.py         close all positions before rollover
+├── 04a_rollover_reopen.py       buy-limit ladder to reopen after rollover
 ├── config.py                    symbol, leverage, magic number constants
 ├── mt5_client.py                MT5 connect/disconnect wrappers
 ├── data.py                      candle and tick data helpers

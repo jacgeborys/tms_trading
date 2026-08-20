@@ -48,6 +48,10 @@ tms/
 ├── 03a_deploy_ladder.py        batch deploy proposed ladder (diff-based, dry-run default)
 ├── import_02.py                import shim for 02_support_levels (digit-prefixed module)
 │
+├── ── ROLLOVER ──────────────────────────────────────────────────────
+├── 04_rollover_close.py        market-sell all positions before rollover
+├── 04a_rollover_reopen.py      buy-limit ladder to reopen after rollover
+│
 ├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   symbol, leverage, magic number constants
 ├── mt5_client.py               connect() / disconnect() wrappers
@@ -168,7 +172,6 @@ python 03a_deploy_ladder.py --execute
 
 ## Still to build
 
-- Rollover close-reopen automation: market sell all before 22:55 Polish time, market buy same volume at session reopen (Sep 16, 2026)
 - Rollover alert: notify on rollover day (Sep 16) that positions must be closed by 22:55 Polish time
 
 ---
