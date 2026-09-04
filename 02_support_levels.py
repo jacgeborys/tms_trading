@@ -630,12 +630,12 @@ def main():
                         help="Max width to merge nearby supports (default 20 pts)")
     parser.add_argument("--n-zones", type=int, default=12,
                         help="Number of top zones to place extra orders at (default 12)")
-    parser.add_argument("--grid-step", type=float, default=20.0,
-                        help="Background grid spacing in pts (default 20)")
+    parser.add_argument("--grid-step", type=float, default=10.0,
+                        help="Background grid spacing in pts (default 10)")
     parser.add_argument("--cluster-step", type=float, default=5.0,
                         help="Spacing between rungs within a support cluster (default 5)")
-    parser.add_argument("--floor", type=float, default=6300.0,
-                        help="Lowest price to cover (default 6300)")
+    parser.add_argument("--floor", type=float, default=7000.0,
+                        help="Lowest price to cover (default 7000)")
     args = parser.parse_args()
 
     print("Connecting to MT5...")
