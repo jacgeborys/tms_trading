@@ -50,7 +50,7 @@ def close_position(position) -> bool:
         "magic":        MAGIC,
         "comment":      "rollover close",
         "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": mt5.ORDER_FILLING_FOK,
     }
 
     result = mt5.order_send(request)
