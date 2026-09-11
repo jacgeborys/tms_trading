@@ -191,6 +191,8 @@ Things that required real investigation to establish — do not re-derive withou
 | No mass close-reopen on rollover dates | June 17 rollover: last M5 bar volume 609 ticks vs 2,940 daily average. No selling pressure spike before break | No need to worry about adverse price impact from other traders closing |
 | S&P dividend yield (~1.3%) < Fed funds rate (~4–4.5%) | Standard macro data | Rollover swap will remain negative for longs until rates fall below dividend yield (~ZIRP conditions). Not expected near-term |
 | Power-hour edge (22 UTC, WR 56.4%) is not profitable | Break-even requires 58.2% WR given 0.7 pt spread. Gap −1.8pp. Confirmed across market/stop/limit entry modes | Research phase closed. No secondary filter found that clears the gap |
+| OANDA margin is based on **entry price**, not current price | Consolidation on Sep 11: old WAE ~7209 → margin ~17,400 PLN (ML=199%); new WAE ~7659 → margin ~19,100 PLN (ML=187%). Formula: `entry_price × lots × contract_size / leverage × FX_margin_rate`. FX margin rate (~3.76) differs from P&L FX rate (~3.69) by +2.1% | Reopening positions at higher prices permanently increases margin locked. Position consolidation has a hidden margin cost beyond spread |
+| MT5 `history_deals_get()` excludes current trading day | Closed 108 positions on Sep 11 — none appeared in deal history until after 22:59 session close | Same-day closed positions are invisible in deal history; must track via `positions_get()` absence |
 
 ---
 
