@@ -318,18 +318,14 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     total_margin    = np.zeros(n)
 
     # margin_scale: converts price × vol × cs / leverage (USD) → account currency (PLN).
-    # Calibrated using the CURRENT close price (≈ current market price) so that the
-    # scale factor represents the effective USD/PLN rate rather than an entry-price artefact.
-    # Historical margin then floats correctly with market price, matching how OANDA
-    # calculates margin requirements on the current price at each point in time.
+    # OANDA computes margin on ENTRY PRICE, not current price.
+    # Calibrate scale factor so that: sum(entry_price * vol * cs / lev) * scale = actual margin_used.
+    # The scale factor captures the USD→PLN FX rate used for margin (~3.76, slightly above spot).
     formula_margin_now = 0.0
     for _, pos in positions.iterrows():
         si = mt5.symbol_info(pos["symbol"])
         contract_size = si.trade_contract_size if si else 50.0
-        sym = pos["symbol"]
-        last_close = (float(symbol_data[sym]["close"].iloc[-1])
-                      if sym in symbol_data else float(pos["price_open"]))
-        formula_margin_now += last_close * pos["volume"] * contract_size / leverage
+        formula_margin_now += pos["price_open"] * pos["volume"] * contract_size / leverage
     margin_scale = (margin_used / formula_margin_now) if formula_margin_now > 0 else 1.0
 
     # Derive PLN_per_USD from a position with nonzero profit — needed to
@@ -411,9 +407,9 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 total_upnl      += flat
                 total_swap_upnl += flat
 
-        # Margin floats per bar with the close price — matches OANDA's current-price
-        # margin requirement.  When market dips, required margin falls too.
-        pos_margin_arr = closes * pos["volume"] * contract_size / leverage * margin_scale
+        # OANDA margin is based on ENTRY PRICE, not current price.
+        # Margin stays constant for the lifetime of the position.
+        pos_margin_arr = pos["price_open"] * pos["volume"] * contract_size / leverage * margin_scale
         total_margin += np.where(active, pos_margin_arr, 0.0)
 
     # ── Historical (closed) positions — margin + P&L reconstruction ─────────
@@ -481,15 +477,10 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             # closes, since margin is released immediately on close.
             margin_window = ((master_times >= np.datetime64(t_open)) &
                              (master_times <  np.datetime64(t_close)))
-            if sym in symbol_data:
-                sym_closes_all = symbol_data[sym]["close"].values
-                hist_margin_arr = (sym_closes_all * od["volume"] * contract_size
-                                   / leverage * margin_scale)
-                total_margin += np.where(margin_window, hist_margin_arr, 0.0)
-            else:
-                hist_margin = (od["price_open"] * od["volume"] * contract_size
-                               / leverage * margin_scale)
-                total_margin += np.where(margin_window, hist_margin, 0.0)
+            # OANDA margin is based on entry price — constant for the position's life
+            hist_margin = (od["price_open"] * od["volume"] * contract_size
+                           / leverage * margin_scale)
+            total_margin += np.where(margin_window, hist_margin, 0.0)
 
             # Reconstruct unrealised P&L over the position's lifetime.
             # If close deal exists in history, anchor to actual net PLN.
