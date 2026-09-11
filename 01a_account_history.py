@@ -443,12 +443,18 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 continue   # currently open (handled above) or already processed
             seen_pids.add(pid)
 
-            # Determine close time: from deal history, or "now" for same-day closes
+            # Determine close time: from deal history, or inferred for same-day closes
             if pid in close_by_id:
                 t_close = close_by_id[pid]
             else:
-                # Closed today (not yet in deal history) — use last bar
-                t_close = pd.Timestamp.now(tz="UTC")
+                # Closed today (not yet in deal history).
+                # Use earliest current position open time as proxy for close time
+                # (new positions were opened right after closing the old ones).
+                # This avoids double-counting margin during the overlap period.
+                if not positions.empty and "time_open" in positions.columns:
+                    t_close = positions["time_open"].min()
+                else:
+                    t_close = pd.Timestamp.now(tz="UTC")
 
             t_open  = od["time"]
             if t_open.tzinfo is not None:
