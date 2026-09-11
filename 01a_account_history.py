@@ -205,7 +205,13 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     # t_start: start of the chart window (from --months), not the position open time
     # This lets us show a flat equity = balance before any position was opened
     if t_start is None:
-        t_start = positions["time_open"].min()
+        candidates = []
+        if not positions.empty and "time_open" in positions.columns:
+            candidates.append(positions["time_open"].min())
+        if not open_deals.empty and "time" in open_deals.columns:
+            candidates.append(open_deals["time"].min())
+        if candidates:
+            t_start = min(candidates)
 
     # Load price data for every symbol — prefer M5, fall back to H1 when M5
     # doesn't reach back to t_start (MT5 only stores ~8.5 months of M5 locally)
@@ -213,8 +219,15 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     if t_start is not None and t_start.tzinfo is not None:
         t_start = t_start.tz_localize(None)
 
+    # Collect all symbols we need data for (open positions + closed deals)
+    all_symbols = set()
+    if not positions.empty and "symbol" in positions.columns:
+        all_symbols.update(positions["symbol"].unique())
+    if not open_deals.empty and "symbol" in open_deals.columns:
+        all_symbols.update(open_deals["symbol"].unique())
+
     symbol_data = {}
-    for sym in positions["symbol"].unique():
+    for sym in all_symbols:
         for tf in ("M5", "H1"):
             df = _load_ohlcv(sym, tf)
             if df is None:
@@ -235,6 +248,25 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             break
         if sym not in symbol_data:
             print(f"  WARNING: No cached data for {sym} — run 01_fetch_data.py first")
+
+    # If t_start is earlier than all available data, clamp to what we have
+    if not symbol_data and t_start is not None:
+        # Retry without t_start constraint — use whatever data is available
+        print("  Retrying with relaxed t_start (data doesn't reach back that far)...")
+        for sym in all_symbols:
+            for tf in ("M5", "H1"):
+                df = _load_ohlcv(sym, tf)
+                if df is None:
+                    continue
+                if df["time"].dt.tz is not None:
+                    df["time"] = df["time"].dt.tz_localize(None)
+                if len(df) == 0:
+                    continue
+                symbol_data[sym] = df
+                t_start = df["time"].iloc[0]
+                print(f"  Using {tf} data for {sym}  ({len(df):,} bars from "
+                      f"{str(df['time'].iloc[0])[:10]}) — clamped t_start")
+                break
 
     if not symbol_data:
         return pd.DataFrame()
@@ -283,6 +315,23 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                       if sym in symbol_data else float(pos["price_open"]))
         formula_margin_now += last_close * pos["volume"] * contract_size / leverage
     margin_scale = (margin_used / formula_margin_now) if formula_margin_now > 0 else 1.0
+
+    # Derive PLN_per_USD from a position with nonzero profit — needed to
+    # estimate P&L for same-day closed positions not yet in deal history.
+    # Use LIVE tick price (not cached M5 close) so it matches pos["profit"].
+    pln_per_usd = margin_scale  # fallback (approximate)
+    for _, pos in positions.iterrows():
+        if abs(pos["profit"]) > 1.0:
+            sym = pos["symbol"]
+            si  = mt5.symbol_info(sym)
+            cs  = si.trade_contract_size if si else 50.0
+            tick = mt5.symbol_info_tick(sym)
+            live_price = tick.bid if tick else float(pos["price_open"])
+            delta = live_price - pos["price_open"]
+            direction = 1.0 if pos["type"] == 0 else -1.0
+            if abs(delta) > 0.1:
+                pln_per_usd = pos["profit"] / (direction * delta * pos["volume"] * cs)
+                break
 
     for _, pos in positions.iterrows():
         sym = pos["symbol"]
@@ -355,9 +404,9 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     # For each closed position we reconstruct BOTH margin and unrealised P&L
     # over its open period.  Without the P&L, equity = balance (just cash) while
     # margin reflects a real position — making margin > equity look wrong.
-    if not open_deals.empty and not trade_deals.empty:
+    if not open_deals.empty:
         close_by_id = trade_deals.set_index("position_id")["time"].to_dict() \
-                      if "position_id" in trade_deals.columns else {}
+                      if not trade_deals.empty and "position_id" in trade_deals.columns else {}
         # Pre-populate with currently open position IDs so partially-closed
         # positions (which appear in both current loop and open_deals) are not
         # double-counted in the historical reconstruction.
@@ -367,14 +416,25 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                 int(pid) for pid in positions["position_id"].dropna()
             )
 
+        # Positions closed today won't appear in trade_deals yet (MT5 settles
+        # at end of trading day).  Detect them: open_deal exists, not in
+        # current positions, not in close_by_id → treat as closed at last bar.
+        now_naive = np.datetime64(pd.Timestamp.now(tz="UTC").tz_localize(None))
+
         for _, od in open_deals.iterrows():
             pid = od["position_id"]
-            if pid not in close_by_id or pid in seen_pids:
-                continue   # still open (handled above) or already processed
+            if pid in seen_pids:
+                continue   # currently open (handled above) or already processed
             seen_pids.add(pid)
 
+            # Determine close time: from deal history, or "now" for same-day closes
+            if pid in close_by_id:
+                t_close = close_by_id[pid]
+            else:
+                # Closed today (not yet in deal history) — use last bar
+                t_close = pd.Timestamp.now(tz="UTC")
+
             t_open  = od["time"]
-            t_close = close_by_id[pid]
             if t_open.tzinfo is not None:
                 t_open  = t_open.tz_localize(None)
             if t_close.tzinfo is not None:
@@ -399,23 +459,38 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                                / leverage * margin_scale)
                 total_margin += np.where(window, hist_margin, 0.0)
 
-            # Option C: anchor historical upnl to actual net PLN from deal history.
-            # net_pln = sum of all close-deal P&L for this position (already PLN).
-            # Scale by price-movement ratio so upnl == net_pln at the close bar.
+            # Reconstruct unrealised P&L over the position's lifetime.
+            # If close deal exists in history, anchor to actual net PLN.
+            # Otherwise (closed today, not yet settled), estimate from price movement.
             if sym in symbol_data:
                 sym_closes = symbol_data[sym]["close"].values
-                net_pln    = float(
-                    trade_deals[trade_deals["position_id"] == pid]["net"].sum()
-                )
-                # Price at the last bar inside the window (≈ close price)
+                deal_net = trade_deals[trade_deals["position_id"] == pid]["net"].sum() \
+                           if not trade_deals.empty else 0.0
+                net_pln = float(deal_net)
+
                 if window.any():
                     close_bar_price = float(sym_closes[window][-1])
                 else:
                     close_bar_price = od["price_open"]
                 delta = close_bar_price - od["price_open"]
-                if abs(delta) > 0.1:
+
+                if abs(net_pln) < 0.01 and abs(delta) > 0.1:
+                    # No deal history yet (closed today) — estimate P&L.
+                    # Derive PLN/USD from margin_scale:
+                    #   margin_PLN = price * vol * cs / lev * margin_scale
+                    #   margin_USD = price * vol * cs / lev
+                    #   → margin_scale = margin_PLN / margin_USD (≈ PLN_per_USD)
+                    # But margin formula has extra broker factors, so cross-check
+                    # with current open positions if possible.
+                    # For P&L: pnl = dir * Δprice * vol * cs * PLN_per_USD
+                    # Use margin_scale directly as PLN_per_USD approximation.
+                    direction = float(od.get("direction", 1.0))
+                    price_pnl = direction * (sym_closes - od["price_open"]) * \
+                                od["volume"] * contract_size * pln_per_usd
+                    hist_upnl = np.where(window, price_pnl, 0.0)
+                elif abs(delta) > 0.1:
                     price_ratio = (sym_closes - od["price_open"]) / delta
-                    hist_upnl   = np.where(window, net_pln * price_ratio, 0.0)
+                    hist_upnl = np.where(window, net_pln * price_ratio, 0.0)
                 else:
                     hist_upnl = np.zeros(n)
                 total_upnl += hist_upnl
