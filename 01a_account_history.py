@@ -186,7 +186,8 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                        trade_deals: pd.DataFrame, open_deals: pd.DataFrame,
                        margin_used: float, leverage: int,
                        t_start: pd.Timestamp = None,
-                       rollover_costs: dict = None) -> pd.DataFrame:
+                       rollover_costs: dict = None,
+                       actual_balance: float = None) -> pd.DataFrame:
     """
     Build a per-bar time series of equity / free_margin / margin_level
     from the earliest open position to now, using cached M5 price data.
@@ -295,6 +296,21 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
     deposited = _step_series(bal_events, "amount")   # steps on deposits/withdrawals
     realised  = _step_series(trade_deals, "net")     # steps on every closed trade
     balance   = deposited + realised
+
+    # Detect same-day closed positions (in open_deals but not in trade_deals
+    # or current positions). MT5 settles at end of trading day, so these
+    # don't appear in balance yet. We'll extend their unrealized P&L window
+    # through the last bar (using <= instead of <) so there's no cliff.
+    close_pids = set(trade_deals["position_id"].unique()) \
+                 if not trade_deals.empty and "position_id" in trade_deals.columns else set()
+    current_pids = set(positions["position_id"].unique()) \
+                   if not positions.empty and "position_id" in positions.columns else set()
+    sameday_pids = set()
+    if not open_deals.empty:
+        sameday_pids = set(open_deals["position_id"]) - close_pids - current_pids
+    if sameday_pids:
+        print(f"  {len(sameday_pids)} same-day closed positions "
+              f"(not yet in deal history — extending P&L to last bar)")
 
     # ── Per-bar unrealised P&L and margin ────────────────────────────────────
     total_upnl      = np.zeros(n)
@@ -445,19 +461,29 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
             contract_size = si.trade_contract_size if si else 50.0
 
             master_times = symbol_data[list(symbol_data.keys())[0]]["time"].values
-            window = ((master_times >= np.datetime64(t_open)) &
-                      (master_times <  np.datetime64(t_close)))
+            is_sameday = pid in sameday_pids
+            # Same-day closes: extend window through last bar (balance hasn't
+            # caught up yet, so unrealized P&L must persist to avoid a cliff).
+            # Settled closes: strict < to avoid double-counting with realised.
+            if is_sameday:
+                window = (master_times >= np.datetime64(t_open))
+            else:
+                window = ((master_times >= np.datetime64(t_open)) &
+                          (master_times <  np.datetime64(t_close)))
 
-            # Per-bar margin using close price (not fixed entry price)
+            # Per-bar margin — use strict window (< t_close) even for same-day
+            # closes, since margin is released immediately on close.
+            margin_window = ((master_times >= np.datetime64(t_open)) &
+                             (master_times <  np.datetime64(t_close)))
             if sym in symbol_data:
                 sym_closes_all = symbol_data[sym]["close"].values
                 hist_margin_arr = (sym_closes_all * od["volume"] * contract_size
                                    / leverage * margin_scale)
-                total_margin += np.where(window, hist_margin_arr, 0.0)
+                total_margin += np.where(margin_window, hist_margin_arr, 0.0)
             else:
                 hist_margin = (od["price_open"] * od["volume"] * contract_size
                                / leverage * margin_scale)
-                total_margin += np.where(window, hist_margin, 0.0)
+                total_margin += np.where(margin_window, hist_margin, 0.0)
 
             # Reconstruct unrealised P&L over the position's lifetime.
             # If close deal exists in history, anchor to actual net PLN.
@@ -1164,7 +1190,8 @@ def main():
             print("\nReconstructing equity from cached M5 price data...")
             ts = reconstruct_equity(positions, bal_events, trade_deals, open_deals,
                                     info.margin, leverage, t_start=None,
-                                    rollover_costs=rollover_costs)
+                                    rollover_costs=rollover_costs,
+                                    actual_balance=info.balance)
             if not ts.empty:
                 print(f"  {len(ts):,} bars  "
                       f"({str(ts['time'].iloc[0])[:16]} UTC → now)")
