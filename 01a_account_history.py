@@ -648,6 +648,63 @@ def print_swap_analysis(trade_deals: pd.DataFrame, currency: str = "PLN"):
     print(f"{'═'*55}")
 
 
+def print_pnl_summary(info, positions: pd.DataFrame,
+                      trade_deals: pd.DataFrame,
+                      bal_events: pd.DataFrame,
+                      currency: str = "PLN"):
+    """All-time P&L breakdown: deposits, gains, rollover costs, net profit."""
+    # Deposits (positive balance events excluding interest)
+    deposits = bal_events[bal_events["amount"] > 0]["amount"].sum() if len(bal_events) else 0.0
+    # Withdrawals / tax / fees (negative balance events)
+    withdrawals = bal_events[bal_events["amount"] < 0]["amount"].sum() if len(bal_events) else 0.0
+    net_deposited = deposits + withdrawals
+
+    # Swap on closed trades
+    closed_swap = float(trade_deals["swap"].sum()) if not trade_deals.empty and "swap" in trade_deals.columns else 0.0
+    # Swap on open positions
+    open_swap = float(positions["swap"].sum()) if not positions.empty and "swap" in positions.columns else 0.0
+    # Roll_fee charges (CHARGE events in balance)
+    roll_fees = 0.0
+    if len(bal_events) and "comment" in bal_events.columns:
+        mask = bal_events["comment"].str.contains("Roll_fee", na=False)
+        roll_fees = float(bal_events.loc[mask, "amount"].sum())
+    total_swap = closed_swap + open_swap + roll_fees
+
+    # Realised P&L on closed trades (profit column, excludes swap)
+    closed_profit = float(trade_deals["profit"].sum()) if not trade_deals.empty and "profit" in trade_deals.columns else 0.0
+    # Unrealised P&L on open positions (profit column, excludes swap)
+    open_profit = float(positions["profit"].sum()) if not positions.empty and "profit" in positions.columns else 0.0
+
+    total_gross = closed_profit + open_profit
+    total_net = total_gross + total_swap
+    equity = float(info.equity)
+
+    print(f"\n{'═'*60}")
+    print(f"  ALL-TIME P&L SUMMARY  ({currency})")
+    print(f"{'═'*60}")
+    print(f"  Net deposited (deposits − withdrawals/tax): {net_deposited:>+12,.2f}")
+    print(f"  Current equity:                             {equity:>12,.2f}")
+    print(f"  ──────────────────────────────────────────────────────────")
+    print(f"  Net profit (equity − deposits):             {equity - net_deposited:>+12,.2f}")
+    print(f"")
+    print(f"  Breakdown:")
+    print(f"    Closed trades P&L (excl. swap):           {closed_profit:>+12,.2f}")
+    print(f"    Open positions P&L (excl. swap):          {open_profit:>+12,.2f}")
+    print(f"    ─── Gross trading profit:                 {total_gross:>+12,.2f}")
+    print(f"")
+    print(f"    Swap on closed trades (Mar+Jun rollovers):{closed_swap:>+12,.2f}")
+    print(f"    Swap on open positions (Sep rollover):    {open_swap:>+12,.2f}")
+    print(f"    Roll_fee charges:                         {roll_fees:>+12,.2f}")
+    print(f"    ─── Total rollover cost:                  {total_swap:>+12,.2f}")
+    print(f"")
+    print(f"    Rollover as % of gross profit:            {total_swap / total_gross * 100:>+11.1f}%")
+    print(f"")
+    print(f"  Tax note (Belka 19%, PIT-38):")
+    print(f"    Swap is deductible → tax saved:           {-total_swap * 0.19:>+12,.2f}")
+    print(f"    Effective rollover cost (after tax):      {total_swap * 0.81:>+12,.2f}")
+    print(f"{'═'*60}")
+
+
 # ── Rollover ledger ────────────────────────────────────────────────────────────
 # Persistent record of per-rollover swap costs for US500.pro.
 # Stored in data/ (not results/) because it is permanent reference data that
@@ -1037,6 +1094,20 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
 
     ax2.plot(times, eq, color="#f0f0f0", lw=1.2, zorder=4, label="Equity")
 
+    # Cumulative swap cost (negative values → plot as positive cost on secondary axis)
+    swap_arr = ts_plot["swap_upnl"].values
+    if np.any(swap_arr != 0):
+        ax2r = ax2.twinx()
+        swap_cost = -swap_arr  # flip sign: cost as positive number
+        ax2r.fill_between(times, 0, swap_cost,
+                          color="#ef5350", alpha=0.25, step="post")
+        ax2r.plot(times, swap_cost, color="#ef5350", lw=1.0, alpha=0.8,
+                  label=f"Cumul. rollover cost ({swap_cost[-1]:,.0f})")
+        ax2r.set_ylabel(f"Rollover cost ({currency})", color="#ef5350", fontsize=8)
+        ax2r.tick_params(axis="y", colors="#ef5350", labelsize=7)
+        ax2r.set_ylim(bottom=0)
+        ax2r.legend(fontsize=7, loc="upper right")
+
     if rollover_dates:
         for rdate in rollover_dates:
             r_np = np.datetime64(rdate.tz_convert(None) if rdate.tzinfo else rdate)
@@ -1161,6 +1232,7 @@ def main():
 
         print_snapshot(info, positions, bal_events)
         print_swap_analysis(trade_deals, currency)
+        print_pnl_summary(info, positions, trade_deals, bal_events, currency)
         print_rollover_model(positions, currency)
 
         rollover_costs = compute_rollover_costs(positions)
