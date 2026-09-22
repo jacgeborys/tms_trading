@@ -518,6 +518,45 @@ def reconstruct_equity(positions: pd.DataFrame, bal_events: pd.DataFrame,
                     hist_upnl = np.zeros(n)
                 total_upnl += hist_upnl
 
+    # ── Realised swap from closed positions ──────────────────────────────────
+    # Swap on closed trades is already in `realised` (via deal `net`), so it's
+    # in `balance`.  But `total_swap_upnl` only tracks open-position swap.
+    # To make equity_no_swap and the rollover cost chart correct, we add closed
+    # trades' swap as permanent steps at each rollover date they survived.
+    if not trade_deals.empty and "swap" in trade_deals.columns:
+        all_rollover_dates = compute_rollover_dates(2020, 2030)
+        past_rollovers_tz  = [d for d in all_rollover_dates
+                              if d <= pd.Timestamp.now(tz="UTC")]
+        closed_with_swap = trade_deals[trade_deals["swap"].abs() > 0.01]
+        # Match each closed trade to its open_deal to get open time
+        open_time_by_pid = {}
+        if not open_deals.empty and "position_id" in open_deals.columns:
+            for _, od in open_deals.iterrows():
+                open_time_by_pid[od["position_id"]] = od["time"]
+        for _, td_row in closed_with_swap.iterrows():
+            pid = td_row["position_id"]
+            if pid in current_pids:
+                continue  # still open — already handled above
+            swap_pln = float(td_row["swap"])
+            t_open = open_time_by_pid.get(pid, td_row["time"])
+            if t_open.tzinfo is None:
+                t_open = t_open.tz_localize("UTC")
+            # Determine which rollovers this closed position survived
+            n_rollovers = sum(1 for r in past_rollovers_tz if r > t_open)
+            if n_rollovers > 0 and rollover_costs:
+                applicable = sorted(
+                    [(r, c) for r, c in rollover_costs.items() if r > t_open]
+                )
+                if applicable:
+                    vol = float(td_row["volume"])
+                    model_total = sum(c * (vol / 0.001) for _, c in applicable)
+                    scale = swap_pln / model_total if abs(model_total) > 1e-6 else 1.0
+                    for rdate, cost_per_001 in applicable:
+                        r_naive  = np.datetime64(rdate.tz_convert(None))
+                        cost_pln = cost_per_001 * (vol / 0.001) * scale
+                        # Permanent step: swap is baked into balance after close
+                        total_swap_upnl += np.where(times >= r_naive, cost_pln, 0.0)
+
     equity       = balance + total_upnl
     free_margin  = equity - total_margin
     margin_level = np.where(total_margin > 0, equity / total_margin * 100.0, np.inf)
