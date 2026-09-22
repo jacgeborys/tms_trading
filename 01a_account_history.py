@@ -1035,8 +1035,15 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
 
         # Equity without swap — shows what equity would be if no rollover costs
         equity_ns = ts_plot["equity_no_swap"].values
+        swap_cost_now = equity_ns[-1] - equity[-1]
         ax1.plot(times, equity_ns, color="#f0f0f0", lw=1.0, ls=":",
-                 alpha=0.5, label="Equity (no swap)", zorder=3)
+                 alpha=0.5, label=f"Equity (no swap)  [gap = {swap_cost_now:,.0f} rollover]",
+                 zorder=3)
+        # Halo: fill the gap between equity and equity_no_swap (= cumulative rollover cost)
+        ax1.fill_between(times, equity, equity_ns,
+                         where=(equity_ns > equity),
+                         color="#ef5350", alpha=0.25, zorder=2,
+                         label=None)
 
         # Balance — step function (rises on deposits, flat otherwise)
         ax1.step(times, ts_plot["balance"].values, where="post",
@@ -1132,18 +1139,6 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
                      color="#ff8080", alpha=0.40, label="Unrealised (loss)")
 
     ax2.plot(times, eq, color="#f0f0f0", lw=1.2, zorder=4, label="Equity")
-
-    # Cumulative swap cost (negative values → plot as positive cost on secondary axis)
-    swap_arr = ts_plot["swap_upnl"].values
-    if np.any(swap_arr != 0):
-        ax2r = ax2.twinx()
-        swap_cost = -swap_arr  # flip sign: cost as positive number
-        ax2r.plot(times, swap_cost, color="#ef5350", lw=2.0, alpha=0.9,
-                  label=f"Cumul. rollover cost ({swap_cost[-1]:,.0f})")
-        ax2r.set_ylabel(f"Rollover cost ({currency})", color="#ef5350", fontsize=8)
-        ax2r.tick_params(axis="y", colors="#ef5350", labelsize=7)
-        ax2r.set_ylim(bottom=0, top=swap_cost.max() * 3)  # compress to top third
-        ax2r.legend(fontsize=7, loc="upper right")
 
     if rollover_dates:
         for rdate in rollover_dates:
