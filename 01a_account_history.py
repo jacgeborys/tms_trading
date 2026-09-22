@@ -1138,13 +1138,11 @@ def plot(ts: pd.DataFrame, bal_events: pd.DataFrame,
     if np.any(swap_arr != 0):
         ax2r = ax2.twinx()
         swap_cost = -swap_arr  # flip sign: cost as positive number
-        ax2r.fill_between(times, 0, swap_cost,
-                          color="#ef5350", alpha=0.25, step="post")
-        ax2r.plot(times, swap_cost, color="#ef5350", lw=1.0, alpha=0.8,
+        ax2r.plot(times, swap_cost, color="#ef5350", lw=2.0, alpha=0.9,
                   label=f"Cumul. rollover cost ({swap_cost[-1]:,.0f})")
         ax2r.set_ylabel(f"Rollover cost ({currency})", color="#ef5350", fontsize=8)
         ax2r.tick_params(axis="y", colors="#ef5350", labelsize=7)
-        ax2r.set_ylim(bottom=0)
+        ax2r.set_ylim(bottom=0, top=swap_cost.max() * 3)  # compress to top third
         ax2r.legend(fontsize=7, loc="upper right")
 
     if rollover_dates:
