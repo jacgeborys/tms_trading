@@ -27,10 +27,10 @@ Usage:
 import sys
 from mt5_client import connect, disconnect
 import MetaTrader5 as mt5
+from config import SYMBOL
 
 BELKA          = 0.19
 SWAP_RATE      = -12.53   # PLN per 0.001 lot per rollover (observed June 2026; Sep/Dec estimated same)
-SYMBOL         = "US500.pro"
 SEP_LABEL      = "Sep 16, 2026"
 DEC_LABEL      = "Dec 16, 2026"
 

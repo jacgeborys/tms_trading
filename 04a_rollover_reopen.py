@@ -26,9 +26,7 @@ import argparse
 import MetaTrader5 as mt5
 
 from mt5_client import connect, disconnect
-
-SYMBOL = "US500.pro"
-MAGIC = 20250101
+from config import SYMBOL, MAGIC
 
 
 def build_orders(price, total_lots, chunk, step):

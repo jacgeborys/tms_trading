@@ -19,9 +19,8 @@ import sys
 import argparse
 import MetaTrader5 as mt5
 from mt5_client import connect, disconnect
+from config import SYMBOL, MAGIC
 
-SYMBOL     = "US500.pro"
-MAGIC      = 20250101
 LOT_DEFAULT = 0.001
 SLIPPAGE   = 0
 

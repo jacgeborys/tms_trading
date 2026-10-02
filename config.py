@@ -1,6 +1,5 @@
 SYMBOL = "US500.pro"
 LEVERAGE = 20
-LOT_SIZE = 0.1          # default lot size for orders
 MAGIC = 20250101        # magic number to tag bot's own trades
 SLIPPAGE = 3            # max slippage in points
 

@@ -17,6 +17,14 @@ Usage:
   python 03a_deploy_ladder.py --grid-step 25   # forward args to ladder proposal
   python 03a_deploy_ladder.py --skip-cancel    # only place missing, don't cancel
   python 03a_deploy_ladder.py --no-chart       # skip chart generation
+  python 03a_deploy_ladder.py --min-ml 120     # stricter margin floor
+  python 03a_deploy_ladder.py --execute --force  # deploy despite margin guard
+
+Margin guard: --execute is refused if any proposed order sits at a price
+where the cascade margin level has already fallen below --min-ml (default
+100%, the margin call level). Such orders cannot be relied on to fill --
+free margin is gone, and stop-out (50%) is close below. Raise --floor
+until the guard passes, or pass --force to override.
 
 Reads proposed ladder from 02_support_levels.propose_ladder().
 Audit trail saved to data/ladder_deployed.csv after each --execute run.
@@ -35,14 +43,13 @@ import matplotlib.ticker as mticker
 import MetaTrader5 as mt5
 
 from mt5_client import connect, disconnect
+from config import SYMBOL, MAGIC
 from import_02 import get_pending_orders, detect_supports, propose_ladder, fetch_d1
 
 _ROOT   = Path(__file__).parent
 _DATA   = _ROOT / "data"
 _CHARTS = _ROOT / "results" / "charts"
 
-SYMBOL = "US500.pro"
-MAGIC = 20250101
 LOT = 0.001
 PRICE_TOLERANCE = 0.5  # orders within this many pts are considered the same
 
@@ -248,11 +255,20 @@ def get_account_state():
     upnl = float(positions["profit"].sum()) if not positions.empty else 0.0
     margin = info.margin if info.margin else 0.0
 
+    # OANDA margin is fixed at entry price, with its own FX rate (~2% above
+    # the P&L rate). Back out PLN of margin per (price x lot x contract / lev).
+    margin_rate = pln_rate * 1.021
+    if not positions.empty and margin > 0:
+        notional = float((positions["price_open"] * positions["volume"]).sum())
+        if notional > 0:
+            margin_rate = margin / (notional * CONTRACT_SIZE / INSTR_LEVERAGE)
+
     state = {
         "balance":  info.balance,
         "equity":   info.equity,
         "margin":   margin,
         "pln_rate": pln_rate,
+        "margin_rate": margin_rate,
         "R":        R,
         "L":        L,
         "upnl_now": upnl,
@@ -261,7 +277,7 @@ def get_account_state():
     return state, positions, info
 
 
-def cascade_analysis(state, proposed, current_price):
+def cascade_analysis(state, proposed, current_price, extra_prices=()):
     """
     For each price from current down to the lowest order, compute:
       - cumulative orders triggered and lots
@@ -279,6 +295,7 @@ def cascade_analysis(state, proposed, current_price):
     test_prices = np.sort(np.unique(np.concatenate([
         order_prices,
         [current_price],
+        list(extra_prices),
         np.arange(
             int(order_prices.min() // 25) * 25,
             current_price + 1,
@@ -298,7 +315,7 @@ def cascade_analysis(state, proposed, current_price):
 
         # Existing positions P&L change
         upnl_existing = state["upnl_now"] + state["L"] * R * (P - current_price)
-        margin_existing = max(state["margin"] * P / current_price, 1e-6)
+        margin_existing = max(state["margin"], 1e-6)  # fixed at entry price
         equity_no_ladder = state["balance"] + upnl_existing
 
         # Triggered orders P&L and margin
@@ -306,7 +323,7 @@ def cascade_analysis(state, proposed, current_price):
         margin_ladder = 0.0
         for op, ov in zip(order_prices[triggered], order_volumes[triggered]):
             upnl_ladder += ov * R * (P - op)
-            margin_ladder += ov * R * P / INSTR_LEVERAGE
+            margin_ladder += ov * CONTRACT_SIZE * op / INSTR_LEVERAGE * state["margin_rate"]
 
         equity = equity_no_ladder + upnl_ladder
         total_margin = max(margin_existing + margin_ladder, 1e-6)
@@ -506,7 +523,7 @@ def plot_cascade(cascade, proposed, state, current_price):
         # honestly reflects the price effect on margin cost.
         # At current price, 1 lot costs R * P / leverage in margin.
         R = state["R"]
-        margin_per_lot = R * current_price / INSTR_LEVERAGE
+        margin_per_lot = state["margin_rate"] * CONTRACT_SIZE * current_price / INSTR_LEVERAGE
         max_lots = cascade["cum_lots"].max()
         ax_right.set_xlim(0, max_lots * 1.15)
         ax_margin.set_xlim(0, max_lots * 1.15 * margin_per_lot)
@@ -534,6 +551,47 @@ def plot_cascade(cascade, proposed, state, current_price):
         warnings.simplefilter("ignore", UserWarning)
         plt.tight_layout()
     return fig
+
+
+def check_margin_guard(cascade, proposed, current_price, min_ml, stress_pct):
+    """
+    Report stress margin levels and orders placed below the margin floor.
+    Returns the number of proposed orders sitting where ML < min_ml.
+    """
+    if cascade.empty:
+        return 0
+
+    below = cascade[cascade["margin_level"] < min_ml]
+    floor_price = below["price"].max() if not below.empty else None
+    stopout = cascade[cascade["margin_level"] < 50]
+    stopout_price = stopout["price"].max() if not stopout.empty else None
+
+    stress_price = current_price * (1 - stress_pct / 100)
+    at_stress = cascade.iloc[(cascade["price"] - stress_price).abs().argmin()]
+
+    print(f"\n{'='*70}")
+    print(f"  MARGIN GUARD (floor {min_ml:.0f}%)")
+    print(f"{'='*70}")
+    print(f"  ML at -{stress_pct:.0f}% ({at_stress['price']:,.0f}):  "
+          f"{at_stress['margin_level']:.0f}%")
+    if floor_price is not None:
+        print(f"  ML < {min_ml:.0f}% from:        {floor_price:,.0f}  "
+              f"({floor_price - current_price:+,.0f} pts)")
+    if stopout_price is not None:
+        print(f"  Stop-out (50%) at:      {stopout_price:,.0f}  "
+              f"({stopout_price - current_price:+,.0f} pts)")
+
+    if floor_price is None:
+        print(f"  OK: margin level stays above {min_ml:.0f}% through the whole ladder.")
+        print(f"{'='*70}")
+        return 0
+
+    bad = proposed[proposed["price"] <= floor_price]
+    print(f"  {len(bad)} orders ({bad['volume'].sum():.3f}L) sit below the floor "
+          f"-- they would need margin that is no longer there.")
+    print(f"  Suggestion: --floor {np.ceil(floor_price / 10) * 10 + 10:.0f}")
+    print(f"{'='*70}")
+    return len(bad)
 
 
 def save_audit_trail(proposed, current_price):
@@ -569,6 +627,13 @@ def main():
                         help="Cluster rung spacing (default 5 pts)")
     parser.add_argument("--floor", type=float, default=7000.0,
                         help="Lowest price to cover (default 7000)")
+    parser.add_argument("--min-ml", type=float, default=100.0,
+                        help="Margin guard: lowest margin level %% an order may "
+                             "fill at (default 100)")
+    parser.add_argument("--stress-pct", type=float, default=10.0,
+                        help="Drop %% to report margin level at (default 10)")
+    parser.add_argument("--force", action="store_true",
+                        help="Execute even if the margin guard fails")
     args = parser.parse_args()
 
     print("Connecting to MT5...")
@@ -614,19 +679,24 @@ def main():
 
         print_plan(current, proposed, to_cancel, to_place, current_price)
 
-        # Cascade analysis (always, regardless of execute mode)
-        if not args.no_chart:
-            print("Building cascade analysis...")
-            acct_state, positions, acct_info = get_account_state()
-            if acct_state is not None:
-                cascade = cascade_analysis(acct_state, proposed, current_price)
-                print_cascade_summary(cascade, acct_state, current_price)
+        # Cascade analysis + margin guard (always, regardless of execute mode)
+        print("Building cascade analysis...")
+        n_below_floor = 0
+        acct_state, positions, acct_info = get_account_state()
+        if acct_state is not None:
+            stress_price = current_price * (1 - args.stress_pct / 100)
+            cascade = cascade_analysis(acct_state, proposed, current_price,
+                                       extra_prices=[stress_price])
+            print_cascade_summary(cascade, acct_state, current_price)
+            n_below_floor = check_margin_guard(cascade, proposed, current_price,
+                                               args.min_ml, args.stress_pct)
 
+            if not args.no_chart:
                 fig = plot_cascade(cascade, proposed, acct_state, current_price)
                 _save_chart(fig, "03a_ladder_cascade")
                 plt.show()
-            else:
-                print("  WARNING: Could not fetch account state for cascade chart.")
+        else:
+            print("  WARNING: Could not fetch account state for cascade analysis.")
 
         if to_cancel.empty and to_place.empty:
             print("\n  Nothing to do -- current orders match the proposed ladder.")
@@ -635,6 +705,11 @@ def main():
         if not args.execute:
             print("\n  DRY RUN -- no orders were changed.")
             print("  Re-run with --execute to deploy for real.")
+            return
+
+        if n_below_floor and not args.force:
+            print(f"\n  REFUSED: margin guard failed ({n_below_floor} orders below "
+                  f"the {args.min_ml:.0f}% floor). Raise --floor or pass --force.")
             return
 
         # Execute

@@ -8,6 +8,14 @@ Current strategy: **buy-and-hold accumulation** with ladder pending orders. Rese
 
 ---
 
+## Status (Oct 2026)
+
+- Holding a long US500.pro position plus a buy-limit ladder down to 7000.
+- `03a_deploy_ladder.py` now has a margin guard and models margin as fixed at entry price (OANDA behaviour). Current ladder fails the guard: orders below ~7,530 sit under 100% margin level.
+- Sep 16, 2026 rollover was paid (positions held). **Next rollover: Dec 16, 2026** — close by 22:55 Polish time with `04_rollover_close.py --execute`.
+
+---
+
 ## Setup
 
 1. **MetaTrader 5** — install the terminal, log in with your broker account, leave it running
@@ -30,9 +38,12 @@ python 02_support_levels.py      # support zone detection for ladder placement
 
 python 03_manage_orders.py list  # list / place / cancel individual pending orders
 python 03a_deploy_ladder.py      # deploy proposed ladder (dry-run by default, --execute to apply)
+                                 # margin guard refuses orders below --min-ml (100%); raise --floor or --force
 
-python 04_rollover_close.py      # close all positions before rollover (dry-run default)
+python 04_rollover_close.py      # close all positions before rollover (dry-run default, retries failures)
 python 04a_rollover_reopen.py --price 7899 --lots 0.260  # reopen via buy-limits
+
+cd monte_carlo && python main.py # Monte Carlo scenario sim -> monte_carlo/output/
 ```
 
 ---
@@ -52,9 +63,10 @@ tms/
 ├── import_02.py                 import shim for 02_support_levels (digit-prefixed module)
 ├── 04_rollover_close.py         close all positions before rollover
 ├── 04a_rollover_reopen.py       buy-limit ladder to reopen after rollover
-├── config.py                    symbol, leverage, magic number constants
+├── config.py                    SYMBOL / MAGIC / leverage — imported by all trading scripts
 ├── mt5_client.py                MT5 connect/disconnect wrappers
 ├── data.py                      candle and tick data helpers
-├── data/                        OHLCV pickles (gitignored, auto-generated)
+├── data/                        OHLCV pickles, rollover ledger, ladder audit (gitignored)
+├── monte_carlo/                 standalone Monte Carlo scenario simulation
 └── archive/                     concluded research phase (power-hour strategy)
 ```

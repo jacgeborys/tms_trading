@@ -2,7 +2,7 @@
 04_rollover_close.py -- Close all US500.pro positions before rollover.
 
 Market-sells every open US500.pro position. Designed for rollover day
-(next: Sep 16, 2026) — close before 22:55 Polish time to avoid the
+(next: Dec 16, 2026) — close before 22:55 Polish time to avoid the
 quarterly swap charge.
 
 **Dry-run by default.** Pass --execute to actually close positions.
@@ -13,13 +13,15 @@ Usage:
 """
 
 import sys
+import time
 import argparse
 import MetaTrader5 as mt5
 
 from mt5_client import connect, disconnect
+from config import SYMBOL, MAGIC
 
-SYMBOL = "US500.pro"
-MAGIC = 20250101
+MAX_ATTEMPTS = 3   # passes over still-open positions
+RETRY_DELAY = 1.0  # seconds between passes
 
 
 def get_positions():
@@ -114,19 +116,35 @@ def main():
             return
 
         print(f"\n  CLOSING {len(positions)} positions ({total_lots:.3f} lots)...")
-        closed, errors = 0, 0
-        for p in positions:
-            ok = close_position(p)
-            if ok:
-                closed += 1
-                print(f"    OK: closed ticket {p.ticket} "
-                      f"({p.volume:.3f}L @ {p.price_open:.1f})")
-            else:
-                errors += 1
+        pending = positions
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                time.sleep(RETRY_DELAY)
+                # Re-read: a "failed" close may have filled anyway
+                open_tickets = {p.ticket for p in get_positions()}
+                pending = [p for p in pending if p.ticket in open_tickets]
+                if not pending:
+                    break
+                print(f"\n  Retry {attempt}/{MAX_ATTEMPTS}: "
+                      f"{len(pending)} positions still open...")
+            failed = []
+            for p in pending:
+                if close_position(p):
+                    print(f"    OK: closed ticket {p.ticket} "
+                          f"({p.volume:.3f}L @ {p.price_open:.1f})")
+                else:
+                    failed.append(p)
+            pending = failed
+            if not pending:
+                break
 
-        print(f"\n  Done: {closed} closed, {errors} errors.")
-        if errors:
-            print(f"  WARNING: {errors} positions failed to close. Check MT5.")
+        remaining = get_positions()
+        print(f"\n  Done: {len(positions) - len(remaining)} closed, "
+              f"{len(remaining)} still open.")
+        if remaining:
+            print(f"  WARNING: {len(remaining)} positions "
+                  f"({sum(p.volume for p in remaining):.3f}L) still open. "
+                  f"Close them manually in MT5 before 22:59 Polish time.")
 
     finally:
         disconnect()
