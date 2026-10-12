@@ -234,6 +234,7 @@ def get_account_state():
                 "price_open":    p.price_open,
                 "price_current": p.price_current,
                 "profit":        p.profit,
+                "swap":          p.swap,
             })
         positions = pd.DataFrame(rows) if rows else pd.DataFrame()
 
@@ -252,7 +253,8 @@ def get_account_state():
 
     R = pln_rate * CONTRACT_SIZE  # PLN per lot per point
     L = float((positions["volume"] * positions["direction"]).sum()) if not positions.empty else 0.0
-    upnl = float(positions["profit"].sum()) if not positions.empty else 0.0
+    # position.profit excludes swap; accrued rollover swap is part of MT5 equity
+    upnl = float((positions["profit"] + positions["swap"]).sum()) if not positions.empty else 0.0
     margin = info.margin if info.margin else 0.0
 
     # OANDA margin is fixed at entry price, with its own FX rate (~2% above
