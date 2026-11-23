@@ -703,6 +703,9 @@ def main():
     parser.add_argument("--survive-ml", type=float, default=100.0,
                         help="Minimum margin level %% at the survival price "
                              "(default 100 = margin call, stop-out is 50)")
+    parser.add_argument("--survive-from-peak", action="store_true",
+                        help="Measure --survive-pct from the --days high instead of "
+                             "the current price (looser in a dip, strict at highs)")
     parser.add_argument("--deposit", type=float, default=0.0,
                         help="Simulate adding this much cash (dry-run only)")
     args = parser.parse_args()
@@ -745,6 +748,13 @@ def main():
 
         acct_state, positions, acct_info = get_account_state()
         survive_price = current_price * (1 - args.survive_pct / 100)
+        if args.survive_from_peak:
+            peak = float(d1["high"].max())
+            survive_price = min(peak * (1 - args.survive_pct / 100), current_price)
+            print(f"  Survival measured from peak {peak:,.0f}: -{args.survive_pct:.0f}% "
+                  f"-> {survive_price:,.0f}")
+            # report the rest of the run as a drop from the current price
+            args.survive_pct = (1 - survive_price / current_price) * 100
         if acct_state is not None:
             acct_state["price_now"] = current_price
             acct_state["balance"] += args.deposit
