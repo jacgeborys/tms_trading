@@ -699,8 +699,11 @@ def main():
                         help="Background grid spacing (default 10 pts)")
     parser.add_argument("--cluster-step", type=float, default=5.0,
                         help="Cluster rung spacing (default 5 pts)")
-    parser.add_argument("--floor", type=float, default=7000.0,
-                        help="Lowest price to cover (default 7000)")
+    parser.add_argument("--floor", type=float, default=None,
+                        help="Lowest price to cover (default: lowest low of the last "
+                             "--floor-days, never below the survival price)")
+    parser.add_argument("--floor-days", type=int, default=63,
+                        help="D1 bars whose lowest low sets the floor (default 63 = ~3 months)")
     parser.add_argument("--min-ml", type=float, default=100.0,
                         help="Margin guard: lowest margin level %% an order may "
                              "fill at (default 100)")
@@ -755,16 +758,6 @@ def main():
             print("ERROR: No support zones detected.")
             sys.exit(1)
 
-        proposed = propose_ladder(
-            zones, current_price,
-            n_zones=args.n_zones,
-            grid_step=args.grid_step,
-            cluster_step=args.cluster_step,
-            floor=args.floor,
-        )
-        print(f"  Proposed: {len(proposed)} orders, {proposed['volume'].sum():.3f}L")
-
-        acct_state, positions, acct_info = get_account_state()
         survive_price = current_price * (1 - args.survive_pct / 100)
         if args.survive_from_peak:
             peak = float(d1["high"].max())
@@ -773,6 +766,27 @@ def main():
                   f"-> {survive_price:,.0f}")
             # report the rest of the run as a drop from the current price
             args.survive_pct = (1 - survive_price / current_price) * 100
+
+        if args.floor is None:
+            recent_low = float(d1["low"].tail(args.floor_days).min())
+            floor = max(recent_low, survive_price)
+            print(f"  Floor: {args.floor_days}-day low {recent_low:,.0f}"
+                  + (f", raised to survival price {survive_price:,.0f}"
+                     if survive_price > recent_low else "")
+                  + f" -> {floor:,.0f} ({(1 - floor / current_price) * 100:.1f}% below price)")
+        else:
+            floor = args.floor
+
+        proposed = propose_ladder(
+            zones, current_price,
+            n_zones=args.n_zones,
+            grid_step=args.grid_step,
+            cluster_step=args.cluster_step,
+            floor=floor,
+        )
+        print(f"  Proposed: {len(proposed)} orders, {proposed['volume'].sum():.3f}L")
+
+        acct_state, positions, acct_info = get_account_state()
         if acct_state is not None:
             acct_state["price_now"] = current_price
             acct_state["balance"] += args.deposit
