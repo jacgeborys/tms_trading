@@ -46,6 +46,7 @@ tms/
 ├── ── ORDER MANAGEMENT ──────────────────────────────────────────────
 ├── 03_manage_orders.py         place / cancel / list individual pending orders
 ├── 03a_deploy_ladder.py        batch deploy proposed ladder (diff-based, dry-run default, margin guard)
+├── 03b_daily_refit.py          unattended daily re-fit run by Windows task "TMS daily ladder refit" (Mon–Fri 16:00, --execute, skips rollover week; log in logs/)
 ├── import_02.py                import shim for 02_support_levels (digit-prefixed module)
 │
 ├── ── ROLLOVER ──────────────────────────────────────────────────────
@@ -185,6 +186,7 @@ python 03a_deploy_ladder.py --floor 7530 --execute   # floor suggested by the gu
 ## Still to build
 
 - Rollover alert: notify on rollover day (Dec 16) that positions must be closed by 22:55 Polish time
+- After the Dec 16 close, the daily re-fit (from Dec 18) will rebuild the ladder near price via limits; decide whether that replaces a manual reopen
 - `01d_rollover_tax_calc.py` still models Sep + Dec 2026 — Sep has passed; update scenarios for Dec 2026 / Mar 2027
 
 ---
