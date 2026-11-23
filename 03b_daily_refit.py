@@ -4,6 +4,10 @@
 Runs 03a_deploy_ladder.py with the agreed survival rule and --execute, and
 appends everything to logs/03b_daily_refit.log.
 
+Risk glide path (RISK_TIERS): survive -20% from peak below 10k PLN equity,
+-25% from 10k, -30% from 20k. Only ever tightens -- the tightest tier
+reached is kept in data/03b_risk_tier.json even if equity later falls.
+
 Skips:
   - weekends
   - rollover week: Monday-Thursday around each OANDA rollover
@@ -23,8 +27,37 @@ from pathlib import Path
 _ROOT = Path(__file__).parent
 _LOG = _ROOT / "logs" / "03b_daily_refit.log"
 
-REFIT_ARGS = ["--fit", "--no-chart", "--survive-from-peak",
-              "--survive-pct", "20", "--survive-ml", "50"]
+REFIT_ARGS = ["--fit", "--no-chart", "--survive-from-peak", "--survive-ml", "50"]
+
+# Risk glide path: aggressive while the account is small, tighter as it grows.
+# (equity threshold PLN, survival fall from peak %). Ratchets: never loosens.
+RISK_TIERS = [(0, 20.0), (10_000, 25.0), (20_000, 30.0)]
+_TIER_FILE = _ROOT / "data" / "03b_risk_tier.json"
+
+
+def current_survive_pct(log) -> float:
+    """Tier from live equity, never looser than the tightest tier reached so far."""
+    import json
+    import MetaTrader5 as mt5
+    if not mt5.initialize():
+        raise RuntimeError(f"MT5 init failed: {mt5.last_error()}")
+    equity = mt5.account_info().equity
+    mt5.shutdown()
+
+    pct = max(p for thr, p in RISK_TIERS if equity >= thr)
+    reached = 0.0
+    if _TIER_FILE.exists():
+        reached = float(json.loads(_TIER_FILE.read_text()).get("survive_pct", 0))
+    if pct > reached:
+        _TIER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _TIER_FILE.write_text(json.dumps({"survive_pct": pct,
+                                          "reached_at": datetime.now().isoformat(),
+                                          "equity": round(equity, 2)}))
+        if reached:
+            log.write(f"Risk tier tightened: -{reached:.0f}% -> -{pct:.0f}% from peak\n")
+    pct = max(pct, reached)
+    log.write(f"Equity {equity:,.0f} PLN -> survive -{pct:.0f}% from peak\n")
+    return pct
 
 
 def rollover_date(year: int, month: int) -> date:
@@ -57,7 +90,13 @@ def main():
                       f"-- skipped. Close positions with 04_rollover_close.py.\n")
             return
 
-        cmd = [sys.executable, str(_ROOT / "03a_deploy_ladder.py")] + REFIT_ARGS
+        try:
+            pct = current_survive_pct(log)
+        except Exception as e:
+            log.write(f"Could not read equity ({e}) -- skipped.\n")
+            return
+        cmd = ([sys.executable, str(_ROOT / "03a_deploy_ladder.py")] + REFIT_ARGS
+               + ["--survive-pct", f"{pct:g}"])
         if not dry:
             cmd.append("--execute")
         log.write("Running: " + " ".join(cmd[1:]) + "\n")
