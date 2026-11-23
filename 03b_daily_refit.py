@@ -4,7 +4,7 @@
 Runs 03a_deploy_ladder.py with the agreed survival rule and --execute, and
 appends everything to logs/03b_daily_refit.log.
 
-Risk glide path (RISK_TIERS): survive -20% from peak below 10k PLN equity,
+Risk glide path (RISK_TIERS): survive -15% from peak below 10k PLN equity,
 -25% from 10k, -30% from 20k. Only ever tightens -- the tightest tier
 reached is kept in data/03b_risk_tier.json even if equity later falls.
 
@@ -31,7 +31,7 @@ REFIT_ARGS = ["--fit", "--no-chart", "--survive-from-peak", "--survive-ml", "50"
 
 # Risk glide path: aggressive while the account is small, tighter as it grows.
 # (equity threshold PLN, survival fall from peak %). Ratchets: never loosens.
-RISK_TIERS = [(0, 20.0), (10_000, 25.0), (20_000, 30.0)]
+RISK_TIERS = [(0, 15.0), (10_000, 25.0), (20_000, 30.0)]
 _TIER_FILE = _ROOT / "data" / "03b_risk_tier.json"
 
 
