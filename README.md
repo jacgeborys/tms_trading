@@ -8,11 +8,12 @@ Current strategy: **buy-and-hold accumulation** with ladder pending orders. Rese
 
 ---
 
-## Status (Oct 2026)
+## Status (Nov 2026)
 
-- Holding a long US500.pro position plus a buy-limit ladder down to 7000.
-- `03a_deploy_ladder.py` now has a margin guard and models margin as fixed at entry price (OANDA behaviour). Current ladder fails the guard: orders below ~7,530 sit under 100% margin level.
-- Sep 16, 2026 rollover was paid (positions held). **Next rollover: Dec 16, 2026** — close by 22:55 Polish time with `04_rollover_close.py --execute`.
+- **Partial stop-out Nov 5–20, 2026** (−12.5% drop from the Oct peak): 64 positions / 0.327 lots force-closed. 24 positions (0.024 lots, avg entry ~7,588) survive; no pending orders.
+- `03a_deploy_ladder.py` now checks **survival below the last rung**: `--fit` keeps the most rungs (nearest first) that survive a further fall to `--survive-pct` (default 20%) with ML ≥ `--survive-ml` (default 100%). `--deposit X` simulates added cash (dry-run only). `--execute` is refused if the survival check fails.
+- As of Nov 23: the 24 survivors alone fail a −12.5% survival test, so `--fit` places 0 rungs until more cash is deposited.
+- **Next rollover: Dec 16, 2026** — close by 22:55 Polish time with `04_rollover_close.py --execute`.
 
 ---
 
@@ -39,6 +40,7 @@ python 02_support_levels.py      # support zone detection for ladder placement
 python 03_manage_orders.py list  # list / place / cancel individual pending orders
 python 03a_deploy_ladder.py      # deploy proposed ladder (dry-run by default, --execute to apply)
                                  # margin guard refuses orders below --min-ml (100%); raise --floor or --force
+python 03a_deploy_ladder.py --fit --deposit 2000   # how many rungs survive a -20% fall with 2000 PLN added
 
 python 04_rollover_close.py      # close all positions before rollover (dry-run default, retries failures)
 python 04a_rollover_reopen.py --price 7899 --lots 0.260  # reopen via buy-limits

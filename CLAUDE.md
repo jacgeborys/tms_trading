@@ -100,7 +100,9 @@ Holding a large long position in US500.pro built up via buy-limit ladder orders.
 3. `python 01b_positions_chart.py` — check current position map + what-if scenarios
 4. `python 03a_deploy_ladder.py` — review ladder cascade + margin guard (dry-run), deploy with `--execute`
 
-**Margin guard (03a):** `--execute` is refused if any proposed order sits where the cascade margin level is already below `--min-ml` (default 100% = margin call). Below that, free margin is gone so fills can't be relied on, and stop-out (50%) is close. Fix by raising `--floor` (the guard prints a suggested value) or override with `--force`. As of Oct 2, 2026: margin call ≈ −250 pts, stop-out ≈ −410 pts from 7,765 — 88 of 124 proposed orders sat below the floor.
+**Margin guard (03a):** `--execute` is refused if any proposed order sits where the cascade margin level is already below `--min-ml` (default 100% = margin call). Below that, free margin is gone so fills can't be relied on, and stop-out (50%) is close. Fix by raising `--floor` (the guard prints a suggested value) or override with `--force`. As of Oct 2, 2026: margin call ≈ −250 pts, stop-out ≈ −410 pts from 7,765 — 88 of 124 proposed orders sat below the floor. **This was not acted on and the account was partially stopped out Nov 5–20, 2026** (64 positions / 0.327 lots; 24 / 0.024 lots survive).
+
+**Survival check (03a, added Nov 23, 2026):** the old guard only checked ML at rung prices, never below the last rung. Now `--execute` is also refused unless the fully-filled position keeps ML ≥ `--survive-ml` (100%) after a fall to `--survive-pct` (20%) below current price. `--fit` trims the ladder to the most rungs that pass; `--deposit X` simulates added cash. A −12.5% 30-day drawdown is ordinary: it occurred in 10 of 17 years 2009–2026 (2020: −36%).
 
 **Sensitivity:** 1 point = ~19.2 PLN per 0.1 lot (50 × USD/PLN). Check live with `01b_positions_chart.py`.
 

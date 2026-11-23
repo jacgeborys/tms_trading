@@ -596,6 +596,64 @@ def check_margin_guard(cascade, proposed, current_price, min_ml, stress_pct):
     return len(bad)
 
 
+def _ml_at(state, prices, vols, P):
+    """Margin level at price P with every rung at or above P filled."""
+    R = state["R"]
+    hit = prices >= P
+    equity = (state["balance"] + state["upnl_now"]
+              + state["L"] * R * (P - state["price_now"])
+              + float((vols[hit] * R * (P - prices[hit])).sum()))
+    margin = (state["margin"]
+              + float((vols[hit] * CONTRACT_SIZE * prices[hit] / INSTR_LEVERAGE).sum())
+              * state["margin_rate"])
+    return (equity / margin * 100) if margin > 1e-6 else float("inf"), equity, margin
+
+
+def _shortfall(state, prices, vols, survive_price, min_ml, survive_ml):
+    """PLN of extra equity needed so that every rung fills at ML >= min_ml
+    and the full position still has ML >= survive_ml at survive_price."""
+    need = 0.0
+    checks = [(p, min_ml) for p in prices] + [(survive_price, survive_ml)]
+    for P, req in checks:
+        _, eq, mg = _ml_at(state, prices, vols, P)
+        need = max(need, req / 100 * mg - eq)
+    return need
+
+
+def fit_ladder(state, proposed, survive_price, min_ml, survive_ml):
+    """
+    Keep the most rungs (nearest-to-price first) the account can carry so
+    that a further fall to survive_price does not breach survive_ml.
+    Returns (fitted_ladder, table of rungs -> deposit needed).
+    """
+    lad = proposed.sort_values("price", ascending=False).reset_index(drop=True)
+    p_all, v_all = lad["price"].values, lad["volume"].values
+    table, best = [], 0
+    for k in range(0, len(lad) + 1):
+        need = _shortfall(state, p_all[:k], v_all[:k], survive_price, min_ml, survive_ml)
+        table.append((k, float(v_all[:k].sum()), p_all[k - 1] if k else None, need))
+        if need <= 0:
+            best = k
+    return lad.iloc[:best].sort_values("price").reset_index(drop=True), table
+
+
+def print_fit_table(table, best, deposit, currency):
+    print(f"\n{'='*70}")
+    print(f"  FIT -- how many rungs the account can carry")
+    print(f"{'='*70}")
+    print(f"  {'Rungs':>5}  {'Lots':>6}  {'Lowest rung':>11}  {'Extra deposit needed':>22}")
+    step = max(1, len(table) // 15)
+    for k, lots, low, need in table:
+        if k % step == 0 or k == best or k == len(table) - 1:
+            low_s = f"{low:,.0f}" if low is not None else "-"
+            need_s = "ok" if need <= 0 else f"{need + deposit:,.0f} {currency}"
+            mark = "  <- fits" if k == best and need <= 0 else ""
+            print(f"  {k:>5}  {lots:>6.3f}  {low_s:>11}  {need_s:>22}{mark}")
+    if deposit:
+        print(f"  (includes the simulated --deposit of {deposit:,.0f} {currency})")
+    print(f"{'='*70}")
+
+
 def save_audit_trail(proposed, current_price):
     """Save deployed ladder to data/ladder_deployed.csv."""
     _DATA.mkdir(parents=True, exist_ok=True)
@@ -636,6 +694,17 @@ def main():
                         help="Drop %% to report margin level at (default 10)")
     parser.add_argument("--force", action="store_true",
                         help="Execute even if the margin guard fails")
+    parser.add_argument("--fit", action="store_true",
+                        help="Trim the ladder to the most rungs (nearest first) "
+                             "that survive a fall to --survive-pct")
+    parser.add_argument("--survive-pct", type=float, default=20.0,
+                        help="Fall below current price the fully-filled position "
+                             "must survive (default 20)")
+    parser.add_argument("--survive-ml", type=float, default=100.0,
+                        help="Minimum margin level %% at the survival price "
+                             "(default 100 = margin call, stop-out is 50)")
+    parser.add_argument("--deposit", type=float, default=0.0,
+                        help="Simulate adding this much cash (dry-run only)")
     args = parser.parse_args()
 
     print("Connecting to MT5...")
@@ -674,6 +743,25 @@ def main():
         )
         print(f"  Proposed: {len(proposed)} orders, {proposed['volume'].sum():.3f}L")
 
+        acct_state, positions, acct_info = get_account_state()
+        survive_price = current_price * (1 - args.survive_pct / 100)
+        if acct_state is not None:
+            acct_state["price_now"] = current_price
+            acct_state["balance"] += args.deposit
+            if args.deposit:
+                print(f"  Simulating deposit of {args.deposit:,.0f} {acct_state['currency']}")
+
+        if args.fit and acct_state is not None:
+            proposed, table = fit_ladder(acct_state, proposed, survive_price,
+                                         args.min_ml, args.survive_ml)
+            print_fit_table(table, len(proposed), args.deposit, acct_state["currency"])
+            print(f"  Fitted: {len(proposed)} orders survive a fall to "
+                  f"{survive_price:,.0f} (-{args.survive_pct:.0f}%) "
+                  f"with ML >= {args.survive_ml:.0f}%")
+            if proposed.empty:
+                print("  No rung fits. Deposit more, or lower --survive-pct.")
+                proposed = pd.DataFrame(columns=["price", "volume", "source"])
+
         # Compute diff
         to_cancel, to_place = diff_ladder(current, proposed)
         if args.skip_cancel:
@@ -684,16 +772,27 @@ def main():
         # Cascade analysis + margin guard (always, regardless of execute mode)
         print("Building cascade analysis...")
         n_below_floor = 0
-        acct_state, positions, acct_info = get_account_state()
+        survive_ok = True
         if acct_state is not None:
             stress_price = current_price * (1 - args.stress_pct / 100)
-            cascade = cascade_analysis(acct_state, proposed, current_price,
-                                       extra_prices=[stress_price])
+            cascade = (cascade_analysis(acct_state, proposed, current_price,
+                                        extra_prices=[stress_price, survive_price])
+                       if not proposed.empty else pd.DataFrame())
             print_cascade_summary(cascade, acct_state, current_price)
             n_below_floor = check_margin_guard(cascade, proposed, current_price,
                                                args.min_ml, args.stress_pct)
 
-            if not args.no_chart:
+            # Survival check: ML after a fall *below* the last rung
+            pv = proposed["price"].values.astype(float) if not proposed.empty else np.array([])
+            vv = proposed["volume"].values.astype(float) if not proposed.empty else np.array([])
+            ml_s, eq_s, _ = _ml_at(acct_state, pv, vv, survive_price)
+            survive_ok = ml_s >= args.survive_ml
+            print(f"  SURVIVAL: at {survive_price:,.0f} (-{args.survive_pct:.0f}%) with all "
+                  f"rungs filled: equity {eq_s:,.0f} {acct_state['currency']}, "
+                  f"ML {ml_s:.0f}% -> {'OK' if survive_ok else 'FAIL'} "
+                  f"(need {args.survive_ml:.0f}%)")
+
+            if not args.no_chart and not cascade.empty:
                 fig = plot_cascade(cascade, proposed, acct_state, current_price)
                 _save_chart(fig, "03a_ladder_cascade")
                 plt.show()
@@ -709,9 +808,19 @@ def main():
             print("  Re-run with --execute to deploy for real.")
             return
 
+        if args.deposit:
+            print("\n  REFUSED: --deposit is a simulation. Deposit the cash, then "
+                  "re-run without --deposit.")
+            return
+
         if n_below_floor and not args.force:
             print(f"\n  REFUSED: margin guard failed ({n_below_floor} orders below "
                   f"the {args.min_ml:.0f}% floor). Raise --floor or pass --force.")
+            return
+
+        if not survive_ok and not args.force:
+            print(f"\n  REFUSED: position would not survive a -{args.survive_pct:.0f}% fall. "
+                  f"Use --fit, deposit more, or pass --force.")
             return
 
         # Execute
