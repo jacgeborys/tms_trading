@@ -46,7 +46,7 @@ tms/
 ├── ── ORDER MANAGEMENT ──────────────────────────────────────────────
 ├── 03_manage_orders.py         place / cancel / list individual pending orders
 ├── 03a_deploy_ladder.py        batch deploy proposed ladder (diff-based, dry-run default, margin guard)
-├── 03b_daily_refit.py          unattended daily re-fit run by Windows task "TMS daily ladder refit" (Mon–Fri 20:00, catch-up at next login, --execute, skips rollover week; risk glide path −15/−25/−30% from peak at <10k/10k/20k PLN equity, ratchets tighter only, tier in data/03b_risk_tier.json; log in logs/)
+├── 03b_daily_refit.py          unattended daily re-fit run by Windows task "TMS daily ladder refit" (Mon–Fri 20:00, catch-up at next login, --execute, skips rollover week; risk glide path −15/−25/−50% from peak at <10k/10k/20k PLN equity, ratchets tighter only, tier in data/03b_risk_tier.json; log in logs/)
 ├── import_02.py                import shim for 02_support_levels (digit-prefixed module)
 │
 ├── ── ROLLOVER ──────────────────────────────────────────────────────
