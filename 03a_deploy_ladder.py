@@ -59,7 +59,8 @@ def diff_ladder(current: pd.DataFrame, proposed: pd.DataFrame):
     Compare current pending orders vs proposed ladder.
     Returns (to_cancel, to_place) DataFrames.
 
-    Matching is by price (within PRICE_TOLERANCE pts).
+    Matching is by price (within PRICE_TOLERANCE pts) and volume, so an order
+    whose size changed is cancelled and re-placed.
     """
     if current.empty:
         return pd.DataFrame(), proposed.copy()
@@ -76,7 +77,8 @@ def diff_ladder(current: pd.DataFrame, proposed: pd.DataFrame):
         for j, prop in proposed.iterrows():
             if proposed.at[j, "matched"]:
                 continue
-            if abs(cur["price"] - prop["price"]) <= PRICE_TOLERANCE:
+            if (abs(cur["price"] - prop["price"]) <= PRICE_TOLERANCE
+                    and abs(cur["volume"] - prop["volume"]) < 1e-6):
                 current.at[i, "matched"] = True
                 proposed.at[j, "matched"] = True
                 break
@@ -631,31 +633,54 @@ def _pick(n_total, k, mode):
     return np.unique(np.round(np.linspace(0, n_total - 1, k)).astype(int))
 
 
+def _volumes(v_all, k, mode):
+    """Per-rung volumes for k 'units'. Units 1..N add rungs (thinned per mode);
+    beyond N every further unit stacks one more base volume on a rung, spread
+    evenly, so each layer brings the whole ladder one size step up."""
+    n = len(v_all)
+    layers, rest = divmod(k, n)
+    vols = v_all * layers
+    extra = np.zeros(n)
+    extra[_pick(n, rest, mode)] = 1
+    return vols + v_all * extra
+
+
 def fit_ladder(state, proposed, survive_price, min_ml, survive_ml, mode="spread"):
     """
-    Keep the most rungs the account can carry so that a further fall to
+    Build the biggest ladder the account can carry so that a further fall to
     survive_price does not breach survive_ml.
       mode="spread":  rungs thinned evenly from current price down to the floor
       mode="nearest": rungs nearest to price first
-    Returns (fitted_ladder, table of rungs -> deposit needed).
+    Once every rung is used, extra margin raises rung sizes the same way
+    (stacked evenly), so the ladder keeps growing with equity.
+    Returns (fitted_ladder, table of units -> deposit needed).
     """
     lad = proposed.sort_values("price", ascending=False).reset_index(drop=True)
     p_all, v_all = lad["price"].values, lad["volume"].values
-    table, best, best_idx = [], 0, np.array([], dtype=int)
-    for k in range(0, len(lad) + 1):
-        idx = _pick(len(lad), k, mode)
-        need = _shortfall(state, p_all[idx], v_all[idx], survive_price, min_ml, survive_ml)
-        table.append((k, float(v_all[idx].sum()), p_all[idx].min() if k else None, need))
+    n = len(lad)
+    table, best_vols = [], np.zeros(n)
+    k, best = 0, 0
+    while True:
+        vols = _volumes(v_all, k, mode)
+        hit = vols > 0
+        need = _shortfall(state, p_all[hit], vols[hit], survive_price, min_ml, survive_ml)
+        table.append((k, float(vols.sum()), p_all[hit].min() if hit.any() else None, need))
         if need <= 0:
-            best, best_idx = k, idx
-    return lad.iloc[best_idx].sort_values("price").reset_index(drop=True), table
+            best, best_vols = k, vols
+        elif k >= max(n, best + n):   # well past the last fitting size
+            break
+        k += 1
+    out = lad.copy()
+    out["volume"] = np.round(best_vols, 3)
+    out = out[out["volume"] > 0]
+    return out.sort_values("price").reset_index(drop=True), table
 
 
 def print_fit_table(table, best, deposit, currency):
     print(f"\n{'='*70}")
     print(f"  FIT -- how many rungs the account can carry")
     print(f"{'='*70}")
-    print(f"  {'Rungs':>5}  {'Lots':>6}  {'Lowest rung':>11}  {'Extra deposit needed':>22}")
+    print(f"  {'Units':>5}  {'Lots':>6}  {'Lowest rung':>11}  {'Extra deposit needed':>22}")
     step = max(1, len(table) // 15)
     for k, lots, low, need in table:
         if k % step == 0 or k == best or k == len(table) - 1:
@@ -796,7 +821,8 @@ def main():
         if args.fit and acct_state is not None:
             proposed, table = fit_ladder(acct_state, proposed, survive_price,
                                          args.min_ml, args.survive_ml, args.fit_mode)
-            print_fit_table(table, len(proposed), args.deposit, acct_state["currency"])
+            best_k = max((k for k, _, _, need in table if need <= 0), default=0)
+            print_fit_table(table, best_k, args.deposit, acct_state["currency"])
             print(f"  Fitted ({args.fit_mode}): {len(proposed)} orders survive a fall to "
                   f"{survive_price:,.0f} (-{args.survive_pct:.0f}%) "
                   f"with ML >= {args.survive_ml:.0f}%")
