@@ -620,21 +620,35 @@ def _shortfall(state, prices, vols, survive_price, min_ml, survive_ml):
     return need
 
 
-def fit_ladder(state, proposed, survive_price, min_ml, survive_ml):
+def _pick(n_total, k, mode):
+    """Indices (into the price-descending ladder) of the k rungs to keep."""
+    if k == 0:
+        return np.array([], dtype=int)
+    if mode == "nearest" or k >= n_total:
+        return np.arange(k)
+    # spread: k rungs evenly by position from the nearest rung to the floor,
+    # so the support clustering of the proposed ladder is kept, just thinner
+    return np.unique(np.round(np.linspace(0, n_total - 1, k)).astype(int))
+
+
+def fit_ladder(state, proposed, survive_price, min_ml, survive_ml, mode="spread"):
     """
-    Keep the most rungs (nearest-to-price first) the account can carry so
-    that a further fall to survive_price does not breach survive_ml.
+    Keep the most rungs the account can carry so that a further fall to
+    survive_price does not breach survive_ml.
+      mode="spread":  rungs thinned evenly from current price down to the floor
+      mode="nearest": rungs nearest to price first
     Returns (fitted_ladder, table of rungs -> deposit needed).
     """
     lad = proposed.sort_values("price", ascending=False).reset_index(drop=True)
     p_all, v_all = lad["price"].values, lad["volume"].values
-    table, best = [], 0
+    table, best, best_idx = [], 0, np.array([], dtype=int)
     for k in range(0, len(lad) + 1):
-        need = _shortfall(state, p_all[:k], v_all[:k], survive_price, min_ml, survive_ml)
-        table.append((k, float(v_all[:k].sum()), p_all[k - 1] if k else None, need))
+        idx = _pick(len(lad), k, mode)
+        need = _shortfall(state, p_all[idx], v_all[idx], survive_price, min_ml, survive_ml)
+        table.append((k, float(v_all[idx].sum()), p_all[idx].min() if k else None, need))
         if need <= 0:
-            best = k
-    return lad.iloc[:best].sort_values("price").reset_index(drop=True), table
+            best, best_idx = k, idx
+    return lad.iloc[best_idx].sort_values("price").reset_index(drop=True), table
 
 
 def print_fit_table(table, best, deposit, currency):
@@ -697,6 +711,10 @@ def main():
     parser.add_argument("--fit", action="store_true",
                         help="Trim the ladder to the most rungs (nearest first) "
                              "that survive a fall to --survive-pct")
+    parser.add_argument("--fit-mode", choices=["spread", "nearest"], default="spread",
+                        help="spread (default): thin the ladder evenly down to --floor, "
+                             "keeping its support clustering; nearest: rungs nearest "
+                             "to price first")
     parser.add_argument("--survive-pct", type=float, default=20.0,
                         help="Fall below current price the fully-filled position "
                              "must survive (default 20)")
@@ -763,9 +781,9 @@ def main():
 
         if args.fit and acct_state is not None:
             proposed, table = fit_ladder(acct_state, proposed, survive_price,
-                                         args.min_ml, args.survive_ml)
+                                         args.min_ml, args.survive_ml, args.fit_mode)
             print_fit_table(table, len(proposed), args.deposit, acct_state["currency"])
-            print(f"  Fitted: {len(proposed)} orders survive a fall to "
+            print(f"  Fitted ({args.fit_mode}): {len(proposed)} orders survive a fall to "
                   f"{survive_price:,.0f} (-{args.survive_pct:.0f}%) "
                   f"with ML >= {args.survive_ml:.0f}%")
             if proposed.empty:
