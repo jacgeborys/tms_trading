@@ -52,6 +52,7 @@ tms/
 ├── ── ROLLOVER ──────────────────────────────────────────────────────
 ├── 04_rollover_close.py        market-sell all positions before rollover (retries up to 3 passes)
 ├── 04a_rollover_reopen.py      buy-limit ladder to reopen after rollover
+├── 04b_rollover_auto.py        unattended rollover close + reopen limits (task "TMS rollover close", 22:50 Mon–Fri, wakes laptop, no catch-up, no-op off rollover day; log in logs/)
 │
 ├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   SYMBOL, MAGIC, leverage — single source; scripts import from here
@@ -127,7 +128,9 @@ Rollover is applied **after the daily trading session close at 22:59 Polish time
 | 2 | 22:59 | 21:59 | Trading day ends — rollover applied to open positions |
 | 3 | ~00:00+1d | ~23:00 | Trading resumes — reopen full position (market buy) |
 
-Verify before Dec 16 that MT5 server time switched to UTC+1 with Polish time (Oct 25) — only the summer +2h offset has been measured.
+Verified Nov 23, 2026: MT5 server time = Polish local time in winter too (both 20:56), so server time is UTC+1 in winter.
+
+**Automated** by Windows task "TMS rollover close" (`04b_rollover_auto.py`, Mon–Fri 22:50, wakes the laptop, no catch-up, no-op except on rollover day): checks server time is 22:40–22:57, cancels pending orders, closes all positions via `04_rollover_close.py --execute`, then at 22:57 places buy-limits for the same lots 1–5 pts below the closing ask (fill when trading resumes ~00:00 if price opens at/below). From the next trading day after rollover week, 03b's re-fit replaces unfilled reopen orders with the normal ladder. Log: `logs/04b_rollover_auto.log`. Rehearse: `python 04b_rollover_auto.py --dry-run --date 2026-12-16 --no-time-check`. Delete: `schtasks /Delete /TN "TMS rollover close" /F`. Keep a calendar reminder for 22:45 as backup (laptop must be on/asleep, not shut down).
 
 **Why market orders, not limits:** The 0.7 pt spread cost (~13.5 PLN per 0.1 lot) is ~1% of the ~1,250 PLN per 0.1 lot rollover saved. Optimizing execution with limits risks missing the fill and chasing price after the gap.
 
@@ -185,8 +188,7 @@ python 03a_deploy_ladder.py --floor 7530 --execute   # floor suggested by the gu
 
 ## Still to build
 
-- Rollover alert: notify on rollover day (Dec 16) that positions must be closed by 22:55 Polish time
-- After the Dec 16 close, the daily re-fit (from Dec 18) will rebuild the ladder near price via limits; decide whether that replaces a manual reopen
+- After Dec 16, check `logs/04b_rollover_auto.log` and how many reopen limits filled; consider a market reopen fallback if price gapped up
 - `01d_rollover_tax_calc.py` still models Sep + Dec 2026 — Sep has passed; update scenarios for Dec 2026 / Mar 2027
 
 ---
