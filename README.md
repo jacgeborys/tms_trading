@@ -12,7 +12,7 @@ Current strategy: **buy-and-hold accumulation** with ladder pending orders. Rese
 
 - **Partial stop-out Nov 5–20, 2026** (−12.5% drop from the Oct peak): 64 positions / 0.327 lots force-closed. 24 positions (0.024 lots, avg entry ~7,588) survive; no pending orders.
 - `03a_deploy_ladder.py` now checks **survival below the last rung**: `--fit` keeps the most rungs (nearest first) that survive a further fall to `--survive-pct` (default 20%) with ML ≥ `--survive-ml` (default 100%). `--deposit X` simulates added cash (dry-run only). `--execute` is refused if the survival check fails.
-- As of Nov 23: the 24 survivors alone fail a −12.5% survival test, so `--fit` places 0 rungs until more cash is deposited.
+- **Nov 23 restart:** closed the 24 survivors (bought at ~7,588; they alone would have been stopped out ~5% lower). Deployed a fitted ladder: 9 × 0.001L buy-limits 7,190→7,110, sized to survive −15% (to ~6,117) above stop-out. No open positions at deploy time. A top-up was pending; re-run `python 03a_deploy_ladder.py --fit --survive-pct 15 --survive-ml 50` once it lands to extend the ladder (diff-based, keeps existing rungs).
 - **Next rollover: Dec 16, 2026** — close by 22:55 Polish time with `04_rollover_close.py --execute`.
 
 ---
