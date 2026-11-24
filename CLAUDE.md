@@ -46,13 +46,13 @@ tms/
 ├── ── ORDER MANAGEMENT ──────────────────────────────────────────────
 ├── 03_manage_orders.py         place / cancel / list individual pending orders
 ├── 03a_deploy_ladder.py        batch deploy proposed ladder (diff-based, dry-run default, margin guard)
-├── 03b_daily_refit.py          unattended daily re-fit run by Windows task "TMS daily ladder refit" (Mon–Fri 20:00, wakes laptop from sleep (wake timers enabled via powercfg RTCWAKE=1, AC+DC), catch-up at next login, --execute, skips rollover week; risk glide path −15/−20/−25/−30% from peak at <25k/25k/50k/100k PLN equity, ratchets tighter only, tier in data/03b_risk_tier.json; log in logs/)
+├── 03b_daily_refit.py          unattended daily re-fit run by Windows task "TMS daily ladder refit" (Mon–Fri 20:00, runs windowless via pythonw.exe, wakes laptop from sleep (wake timers enabled via powercfg RTCWAKE=1, AC+DC), catch-up at next login, --execute, skips rollover week; risk glide path −15/−20/−25/−30% from peak at <25k/25k/50k/100k PLN equity, ratchets tighter only, tier in data/03b_risk_tier.json; log in logs/)
 ├── import_02.py                import shim for 02_support_levels (digit-prefixed module)
 │
 ├── ── ROLLOVER ──────────────────────────────────────────────────────
 ├── 04_rollover_close.py        market-sell all positions before rollover (retries up to 3 passes)
 ├── 04a_rollover_reopen.py      buy-limit ladder to reopen after rollover
-├── 04b_rollover_auto.py        unattended rollover close + reopen limits (task "TMS rollover close", 22:50 Mon–Fri, wakes laptop, no catch-up, no-op off rollover day; log in logs/)
+├── 04b_rollover_auto.py        unattended rollover close + reopen limits (task "TMS rollover close", 22:50 Mon–Fri, windowless via pythonw.exe, wakes laptop, no catch-up, no-op off rollover day; log in logs/)
 │
 ├── ── LIBRARY MODULES ─────────────────────────────────────────────────
 ├── config.py                   SYMBOL, MAGIC, leverage — single source; scripts import from here
