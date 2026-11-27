@@ -5,7 +5,7 @@ Runs 03a_deploy_ladder.py with the agreed survival rule and --execute, and
 appends everything to logs/03b_daily_refit.log.
 
 Risk glide path (RISK_TIERS): survive -15% from peak below 25k PLN equity,
--20% from 25k, -25% from 50k, -30% from 100k, and at least -20% from Dec 7, 2026
+-20% from 25k, -25% from 50k, -30% from 100k, and at least -20% from Dec 10, 2026
 (RISK_FROM_DATE). Only ever tightens -- the tightest tier
 reached is kept in data/03b_risk_tier.json even if equity later falls.
 
@@ -34,8 +34,8 @@ REFIT_ARGS = ["--fit", "--no-chart", "--survive-from-peak", "--survive-ml", "50"
 # (equity threshold PLN, survival fall from peak %). Ratchets: never loosens.
 RISK_TIERS = [(0, 15.0), (25_000, 20.0), (50_000, 25.0), (100_000, 30.0)]
 # Date-based tightening: from this date on, at least this tier (then ratchets as usual).
-# User's choice (Nov 26, 2026): -15% for one more week to catch the dip, then -20%.
-RISK_FROM_DATE = [(date(2026, 12, 7), 20.0)]
+# User's choice (Nov 26, moved Nov 27, 2026): keep -15% through the Fed decision on Dec 9, then -20%.
+RISK_FROM_DATE = [(date(2026, 12, 10), 20.0)]
 _TIER_FILE = _ROOT / "data" / "03b_risk_tier.json"
 
 
